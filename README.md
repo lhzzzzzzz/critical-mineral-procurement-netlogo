@@ -12,5 +12,7 @@ Open `model.nlogox` in NetLogo 7.0.4. Set the sliders, click **Setup**, then use
 - Equal order splitting across a manufacturer's selected suppliers and proportional allocation when supplier capacity is limited.
 - Purchase and transport charges based on delivered units, plus a per-cycle fee for each active supplier relationship.
 - Reproducible route-specific transport rates controlled by `route-seed`. Node positions are for display only.
+- One scheduled, complete supplier outage with a chosen start cycle and duration. Orders and relationships remain fixed during the outage, and normal supply resumes afterward.
+- Independent random supplier outages with a configurable per-cycle risk and duration range. `scenario-seed` reproduces manufacturer demands and outage events across sourcing strategies.
 
-The model reports demand, deliveries, unmet demand, fill rates, and period and cumulative costs. Inventory, disruptions, and changing supplier prices are planned for later stages.
+The model reports demand, deliveries, unmet demand, fill rates, and period and cumulative costs. Inventory, supplier switching, and changing supplier prices are planned for later stages.
