@@ -1,0 +1,1217 @@
+<?xml version="1.0" encoding="utf-8"?>
+<model version="NetLogo 7.0.4" snapToGrid="true">
+  <code><![CDATA[;; Stage 4: add purchase, transport, and relationship costs.
+;; Positions show the network; transport rates belong to supplier-buyer pairs.
+;; Inventory, disruptions, and changing prices come in later stages.
+
+breed [suppliers supplier]
+breed [manufacturers manufacturer]
+directed-link-breed [contracts contract]
+
+globals [
+  capacity-setting
+  demand-min-setting
+  demand-max-setting
+  partner-count-setting
+  route-seed-setting
+  settings-ready?
+  active-capacity
+  active-demand-min
+  active-demand-max
+  active-partner-count
+  active-route-seed
+  route-rates
+  relationship-fee
+  period-demand
+  period-delivered
+  period-unmet
+  cumulative-demand
+  cumulative-delivered
+  cumulative-unmet
+  period-purchase-cost
+  period-transport-cost
+  period-relationship-cost
+  period-total-cost
+  cumulative-purchase-cost
+  cumulative-transport-cost
+  cumulative-relationship-cost
+  cumulative-total-cost
+]
+
+suppliers-own [
+  capacity
+  orders-received
+  amount-shipped
+  fill-ratio
+  unit-price
+]
+
+contracts-own [
+  units-ordered
+  units-delivered
+  transport-rate
+  purchase-charge
+  transport-charge
+]
+
+manufacturers-own [
+  demand
+  order-quantity
+  amount-received
+  unmet-demand
+  buyer-purchase-cost
+  buyer-transport-cost
+  buyer-relationship-cost
+  buyer-total-cost
+  buyer-cumulative-cost
+]
+
+to startup
+  reset-parameters
+end
+
+to reset-parameters
+  set capacity-setting 50
+  set demand-min-setting 30
+  set demand-max-setting 50
+  set partner-count-setting 1
+  set route-seed-setting 2026
+  set settings-ready? true
+end
+
+to ensure-settings
+  if settings-ready? != true [ reset-parameters ]
+end
+
+to read-interface-settings
+  set capacity-setting runresult "supplier-capacity"
+  set demand-min-setting runresult "min-demand"
+  set demand-max-setting runresult "max-demand"
+  set partner-count-setting runresult "supplier-count"
+  set route-seed-setting runresult "route-seed"
+end
+
+to setup
+  ensure-settings
+  read-interface-settings
+  if demand-min-setting > demand-max-setting [
+    error "Minimum demand exceeds maximum demand. Change the sliders before Setup."
+  ]
+  ;; Preserve control values because clear-all resets model globals.
+  let selected-capacity capacity-setting
+  let selected-min demand-min-setting
+  let selected-max demand-max-setting
+  let selected-partners partner-count-setting
+  let selected-route-seed route-seed-setting
+  clear-all
+  set capacity-setting selected-capacity
+  set demand-min-setting selected-min
+  set demand-max-setting selected-max
+  set partner-count-setting selected-partners
+  set route-seed-setting selected-route-seed
+  set settings-ready? true
+  set active-capacity selected-capacity
+  set active-demand-min selected-min
+  set active-demand-max selected-max
+  set active-partner-count selected-partners
+  set active-route-seed selected-route-seed
+  set relationship-fee 50
+  ask patches [ set pcolor (rgb 17 27 43) ]
+
+  ;; Fixed positions keep the procurement links easy to follow.
+  create-suppliers 3 [
+    setxy -10 (10 - who * 10)
+    set shape "box"
+    set size 3
+    set color (rgb 46 196 168)
+    set label (word "S" (who + 1))
+    set label-color white
+    set capacity capacity-setting
+    set orders-received 0
+    set amount-shipped 0
+    set fill-ratio 1
+    set unit-price 100
+  ]
+
+  create-manufacturers 3 [
+    let index (who - 3)
+    setxy 10 (10 - index * 10)
+    set shape "house"
+    set size 2.8
+    set color (rgb 100 160 245)
+    set label-color white
+    ;; Draw demand once per manufacturer; it stays fixed during this run.
+    set demand demand-min-setting +
+      random (demand-max-setting - demand-min-setting + 1)
+    set label (word "M" (index + 1) "  0/" demand)
+    set order-quantity 0
+    set amount-received 0
+    set unmet-demand 0
+    set buyer-purchase-cost 0
+    set buyer-transport-cost 0
+    set buyer-relationship-cost 0
+    set buyer-total-cost 0
+    set buyer-cumulative-cost 0
+  ]
+
+  ;; Sample all nine potential route rates with a separate, fixed seed.
+  ;; This keeps transport conditions identical across sourcing strategies.
+  with-local-randomness [
+    random-seed route-seed-setting
+    set route-rates n-values 3 [
+      n-values 3 [ precision (0.5 + random-float 1) 2 ]
+    ]
+  ]
+
+  ;; Fixed preference lists make the three strategies easy to compare.
+  ;; The first supplier preserves the previous stage's links.
+  let supplier-list sort suppliers
+  ask manufacturers [
+    let index (who - 3)
+    let preferences item index [[0 1 2] [1 2 0] [0 2 1]]
+    foreach (sublist preferences 0 partner-count-setting) [ supplier-index ->
+      create-contract-to (item supplier-index supplier-list) [
+        set color (rgb 85 112 139)
+        set thickness 0.12
+        set units-ordered 0
+        set units-delivered 0
+        set transport-rate item supplier-index (item index route-rates)
+        set purchase-charge 0
+        set transport-charge 0
+      ]
+    ]
+  ]
+
+  set period-demand 0
+  set period-delivered 0
+  set period-unmet 0
+  set cumulative-demand 0
+  set cumulative-delivered 0
+  set cumulative-unmet 0
+  set period-purchase-cost 0
+  set period-transport-cost 0
+  set period-relationship-cost 0
+  set period-total-cost 0
+  set cumulative-purchase-cost 0
+  set cumulative-transport-cost 0
+  set cumulative-relationship-cost 0
+  set cumulative-total-cost 0
+  reset-ticks
+end
+
+to go
+  if not any? manufacturers [
+    error "Run Setup before Step or Run."
+  ]
+  read-interface-settings
+  if demand-min-setting > demand-max-setting [
+    error "Minimum demand exceeds maximum demand. Change the sliders and run Setup."
+  ]
+  if capacity-setting != active-capacity or
+     demand-min-setting != active-demand-min or
+     demand-max-setting != active-demand-max or
+     partner-count-setting != active-partner-count or
+     route-seed-setting != active-route-seed [
+    error "A slider changed. Run Setup before Step or Run."
+  ]
+
+  ;; 1. Split each manufacturer's full demand equally across its links.
+  ask suppliers [
+    set orders-received 0
+    set amount-shipped 0
+  ]
+  ask manufacturers [
+    set order-quantity demand
+    set amount-received 0
+    set unmet-demand 0
+  ]
+  ask contracts [
+    set units-ordered [order-quantity] of end1 / [count my-out-contracts] of end1
+    set units-delivered 0
+  ]
+
+  ;; 2. Each supplier allocates capacity proportionally across its links.
+  ask suppliers [
+    set orders-received sum [units-ordered] of my-in-contracts
+    ifelse orders-received = 0
+      [ set fill-ratio 1 ]
+      [ set fill-ratio min (list 1 (capacity / orders-received)) ]
+  ]
+
+  ;; 3. Deliver each link's order at its supplier's fill ratio.
+  ask contracts [
+    set units-delivered units-ordered * [fill-ratio] of end2
+    set purchase-charge units-delivered * [unit-price] of end2
+    set transport-charge units-delivered * transport-rate
+    ifelse units-delivered < units-ordered
+      [ set color (rgb 250 166 79) ]
+      [ set color (rgb 85 112 139) ]
+  ]
+
+  ask manufacturers [
+    set amount-received sum [units-delivered] of my-out-contracts
+    set unmet-demand max (list 0 (demand - amount-received))
+    set buyer-purchase-cost sum [purchase-charge] of my-out-contracts
+    set buyer-transport-cost sum [transport-charge] of my-out-contracts
+    set buyer-relationship-cost relationship-fee * count my-out-contracts
+    set buyer-total-cost buyer-purchase-cost + buyer-transport-cost + buyer-relationship-cost
+    set buyer-cumulative-cost buyer-cumulative-cost + buyer-total-cost
+    ifelse unmet-demand > 0
+      [ set color (rgb 250 166 79) ]
+      [ set color (rgb 100 160 245) ]
+    set label (word "M" (who - 2) "  " (precision amount-received 1) "/" demand)
+  ]
+
+  ask suppliers [
+    set amount-shipped sum [units-delivered] of my-in-contracts
+    ifelse orders-received > capacity
+      [ set color (rgb 250 166 79) ]
+      [ set color (rgb 46 196 168) ]
+    set label (word "S" (who + 1) "  " orders-received "→" (precision amount-shipped 1))
+  ]
+
+  ;; 4. Update demand and cost totals. One tick is one procurement cycle.
+  set period-demand sum [demand] of manufacturers
+  set period-delivered sum [amount-received] of manufacturers
+  set period-unmet sum [unmet-demand] of manufacturers
+  set cumulative-demand cumulative-demand + period-demand
+  set cumulative-delivered cumulative-delivered + period-delivered
+  set cumulative-unmet cumulative-unmet + period-unmet
+  set period-purchase-cost sum [buyer-purchase-cost] of manufacturers
+  set period-transport-cost sum [buyer-transport-cost] of manufacturers
+  set period-relationship-cost sum [buyer-relationship-cost] of manufacturers
+  set period-total-cost period-purchase-cost + period-transport-cost + period-relationship-cost
+  set cumulative-purchase-cost cumulative-purchase-cost + period-purchase-cost
+  set cumulative-transport-cost cumulative-transport-cost + period-transport-cost
+  set cumulative-relationship-cost cumulative-relationship-cost + period-relationship-cost
+  set cumulative-total-cost cumulative-total-cost + period-total-cost
+  tick
+end
+
+to-report period-fulfillment-text
+  if period-demand = 0 [ report "N/A" ]
+  report (word (precision (100 * period-delivered / period-demand) 1) "%")
+end
+
+to-report cumulative-fulfillment-text
+  if cumulative-demand = 0 [ report "N/A" ]
+  report (word (precision (100 * cumulative-delivered / cumulative-demand) 1) "%")
+end]]></code>
+  <widgets>
+    <view x="260" wrappingAllowedX="false" y="78" frameRate="20.0" minPycor="-16" height="500" showTickCounter="true" patchSize="15.0" fontSize="11" wrappingAllowedY="false" width="500" tickCounterLabel="Cycle" maxPycor="16" updateMode="1" maxPxcor="16" minPxcor="-16"></view>
+    <note x="20" y="12" backgroundDark="0" fontSize="18" width="1060" markdown="false" height="50" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Critical Mineral Procurement | Stage 4</note>
+    <note x="20" y="72" backgroundDark="0" fontSize="11" width="220" markdown="false" height="38" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Capacity, sourcing, and procurement costs</note>
+    <note x="20" y="128" backgroundDark="0" fontSize="13" width="220" markdown="false" height="32" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Controls</note>
+    <button x="20" y="168" height="46" disableUntilTicks="false" forever="false" kind="Observer" width="220" display="Setup">setup</button>
+    <button x="20" y="224" height="46" disableUntilTicks="true" forever="false" kind="Observer" width="105" display="Step">go</button>
+    <button x="135" y="224" height="46" disableUntilTicks="true" forever="true" kind="Observer" width="105" display="Run">go</button>
+    <note x="20" y="278" backgroundDark="0" fontSize="10" width="220" markdown="false" height="22" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Suppliers per manufacturer</note>
+    <slider x="20" step="1.0" y="302" max="3.0" width="220" display="supplier-count" height="55" min="1.0" direction="Horizontal" default="1.0" variable="supplier-count" units="suppliers"></slider>
+    <slider x="20" step="10.0" y="360" max="100.0" width="220" display="supplier-capacity" height="55" min="0.0" direction="Horizontal" default="50.0" variable="supplier-capacity" units="units"></slider>
+    <slider x="20" step="10.0" y="418" max="100.0" width="220" display="min-demand" height="55" min="0.0" direction="Horizontal" default="30.0" variable="min-demand" units="units"></slider>
+    <slider x="20" step="10.0" y="476" max="100.0" width="220" display="max-demand" height="55" min="0.0" direction="Horizontal" default="50.0" variable="max-demand" units="units"></slider>
+    <note x="20" y="590" backgroundDark="0" fontSize="10" width="220" markdown="false" height="22" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Transport cost scenario</note>
+    <slider x="20" step="1.0" y="614" max="9999.0" width="220" display="route-seed" height="55" min="1.0" direction="Horizontal" default="2026.0" variable="route-seed"></slider>
+    <note x="20" y="684" backgroundDark="0" fontSize="10" width="220" markdown="false" height="34" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">After changing a slider, click Setup.</note>
+    <note x="780" y="83" backgroundDark="0" fontSize="14" width="300" markdown="false" height="31" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Network totals</note>
+    <monitor x="780" precision="0" y="122" height="62" fontSize="12" width="143" display="Period demand">period-demand</monitor>
+    <monitor x="937" precision="0" y="122" height="62" fontSize="12" width="143" display="Period delivered">period-delivered</monitor>
+    <monitor x="780" precision="0" y="194" height="62" fontSize="12" width="143" display="Period unmet">period-unmet</monitor>
+    <monitor x="937" precision="0" y="194" height="62" fontSize="12" width="143" display="Period fill rate">period-fulfillment-text</monitor>
+    <monitor x="780" precision="0" y="266" height="62" fontSize="12" width="143" display="Total unmet">cumulative-unmet</monitor>
+    <monitor x="937" precision="0" y="266" height="62" fontSize="12" width="143" display="Overall fill rate">cumulative-fulfillment-text</monitor>
+    <plot x="780" autoPlotX="true" yMax="100.0" autoPlotY="true" yAxis="Units" y="346" xMin="0.0" height="231" legend="true" xMax="20.0" yMin="0.0" width="300" xAxis="Cycle" display="Demand and deliveries per cycle">
+      <setup></setup>
+      <update></update>
+      <pen interval="1.0" mode="0" display="Demand" color="-16736752" legend="true"><setup></setup><update>plot period-demand</update></pen>
+      <pen interval="1.0" mode="0" display="Delivered" color="-12015457" legend="true"><setup></setup><update>plot period-delivered</update></pen>
+    </plot>
+    <note x="780" y="592" backgroundDark="0" fontSize="13" width="300" markdown="false" height="29" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Procurement costs</note>
+    <monitor x="780" precision="2" y="628" height="62" fontSize="11" width="94" display="Purchase">period-purchase-cost</monitor>
+    <monitor x="883" precision="2" y="628" height="62" fontSize="11" width="94" display="Transport">period-transport-cost</monitor>
+    <monitor x="986" precision="2" y="628" height="62" fontSize="11" width="94" display="Link fees">period-relationship-cost</monitor>
+    <monitor x="780" precision="2" y="700" height="62" fontSize="12" width="143" display="Period total">period-total-cost</monitor>
+    <monitor x="937" precision="2" y="700" height="62" fontSize="12" width="143" display="Cumulative total">cumulative-total-cost</monitor>
+  </widgets>
+  <info><![CDATA[## Purpose
+
+Stage 4 adds three cost components to the capacity-constrained procurement network: mineral purchases, transportation, and the upkeep of supplier relationships. The network still has three suppliers and three manufacturers. Each manufacturer splits its order equally among one, two, or three fixed suppliers. Inventory, disruptions, supplier switching, and changing prices come later.
+
+## Network and controls
+
+The supplier-count slider sets the number of suppliers used by *each* manufacturer. Setup selects the first one, two, or three suppliers in these fixed preference lists:
+
+| Manufacturer | First | Second | Third |
+| --- | --- | --- | --- |
+| M1 | S1 | S2 | S3 |
+| M2 | S2 | S3 | S1 |
+| M3 | S1 | S3 | S2 |
+
+The supplier-capacity slider sets each supplier's capacity. The min-demand and max-demand sliders give all manufacturers the same inclusive demand range; Setup draws one integer demand per manufacturer. Demand, capacity, and relationships stay fixed during a run. Set min-demand equal to max-demand when you want the same demand in repeated strategy comparisons.
+
+Positions are fixed for readability and have no effect on transportation cost. Each potential manufacturer–supplier pair instead has a unit transportation rate. Setup draws all nine rates from 0.5–1.5 cost units per delivered mineral unit, rounded to two decimal places. The route-seed slider (1–9999) selects a reproducible rate table. The same seed produces the same rates for all three sourcing strategies, including pairs without an active link. Changing the seed and clicking Setup generates a different scenario. The rate table stays fixed during a run.
+
+## Each cycle
+
+1. Each manufacturer splits its full demand equally among its contract links.
+2. Each supplier fills those orders up to its capacity, using the same fill ratio for every incoming link.
+3. A link's purchase charge is its delivered units × the supplier's unit price. Its transport charge is delivered units × that pair's transport rate. Both charges are zero when nothing is delivered.
+4. Each manufacturer also pays 50 cost units per active supplier relationship every cycle, even if that supplier delivers nothing. Its total cost is purchase + transport + relationship cost.
+5. The model updates current-cycle and cumulative cost and demand totals. One tick is one procurement cycle.
+
+Every supplier's unit purchase price is 100 cost units in this stage. Supplier-specific prices and price feedback are later stages. Unmet demand is reported separately; it is not assigned a monetary penalty.
+
+## Reading the display
+
+Click Setup to build the network, Step for one cycle, or Run for continuous cycles. Changing any slider requires another Setup. If min-demand exceeds max-demand, Setup and subsequent cycles stop with an error.
+
+Green boxes are suppliers; blue houses are manufacturers. Orange suppliers received more orders than their capacity; orange manufacturers have unmet demand. An orange link was not fully delivered. Supplier labels show `orders received → amount shipped`; manufacturer labels show `amount received / demand`.
+
+The upper right monitors show period demand, deliveries, unmet demand, and fill rates. The lower right monitors show current-cycle purchase, transport, and relationship charges, their period total, and the cumulative total across completed cycles. Fill rate is delivered / demand × 100%; it shows N/A when demand is zero.
+
+## Hand-check example
+
+Set supplier-capacity to 50, min-demand and max-demand to 30, and route-seed to 2026. The route rates, with manufacturers as rows and suppliers as columns, are:
+
+| Route | S1 | S2 | S3 |
+| --- | ---: | ---: | ---: |
+| M1 | 0.72 | 0.91 | 1.48 |
+| M2 | 0.59 | 0.98 | 1.49 |
+| M3 | 0.70 | 1.41 | 1.06 |
+
+With supplier-count = 1, S1 ships 50 and S2 ships 30, for 80 delivered and 10 unmet. Purchase cost is 8,000, transport cost is 64.90, and three relationship fees total 150, so period total cost is 8,214.90. With supplier-count = 2, all 90 units are delivered; purchase, transport, and relationship costs are 9,000, 87.90, and 300, for a period total of 9,387.90. With supplier-count = 3, all 90 units are delivered and the three costs are 9,000, 93.40, and 450, for a period total of 9,543.40.]]></info>
+  <turtleShapes>
+    <shape name="default" rotatable="true" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="5"></point>
+        <point x="40" y="250"></point>
+        <point x="150" y="205"></point>
+        <point x="260" y="250"></point>
+      </polygon>
+    </shape>
+    <shape name="airplane" rotatable="true" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="0"></point>
+        <point x="135" y="15"></point>
+        <point x="120" y="60"></point>
+        <point x="120" y="105"></point>
+        <point x="15" y="165"></point>
+        <point x="15" y="195"></point>
+        <point x="120" y="180"></point>
+        <point x="135" y="240"></point>
+        <point x="105" y="270"></point>
+        <point x="120" y="285"></point>
+        <point x="150" y="270"></point>
+        <point x="180" y="285"></point>
+        <point x="210" y="270"></point>
+        <point x="165" y="240"></point>
+        <point x="180" y="180"></point>
+        <point x="285" y="195"></point>
+        <point x="285" y="165"></point>
+        <point x="180" y="105"></point>
+        <point x="180" y="60"></point>
+        <point x="165" y="15"></point>
+      </polygon>
+    </shape>
+    <shape name="arrow" rotatable="true" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="0"></point>
+        <point x="0" y="150"></point>
+        <point x="105" y="150"></point>
+        <point x="105" y="293"></point>
+        <point x="195" y="293"></point>
+        <point x="195" y="150"></point>
+        <point x="300" y="150"></point>
+      </polygon>
+    </shape>
+    <shape name="box" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="285"></point>
+        <point x="285" y="225"></point>
+        <point x="285" y="75"></point>
+        <point x="150" y="135"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="135"></point>
+        <point x="15" y="75"></point>
+        <point x="150" y="15"></point>
+        <point x="285" y="75"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="15" y="75"></point>
+        <point x="15" y="225"></point>
+        <point x="150" y="285"></point>
+        <point x="150" y="135"></point>
+      </polygon>
+      <line endX="150" startY="285" marked="false" color="255" endY="135" startX="150"></line>
+      <line endX="15" startY="135" marked="false" color="255" endY="75" startX="150"></line>
+      <line endX="285" startY="135" marked="false" color="255" endY="75" startX="150"></line>
+    </shape>
+    <shape name="bug" rotatable="true" editableColorIndex="0">
+      <circle x="96" y="182" marked="true" color="-1920102913" diameter="108" filled="true"></circle>
+      <circle x="110" y="127" marked="true" color="-1920102913" diameter="80" filled="true"></circle>
+      <circle x="110" y="75" marked="true" color="-1920102913" diameter="80" filled="true"></circle>
+      <line endX="80" startY="100" marked="true" color="-1920102913" endY="30" startX="150"></line>
+      <line endX="220" startY="100" marked="true" color="-1920102913" endY="30" startX="150"></line>
+    </shape>
+    <shape name="butterfly" rotatable="true" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="165"></point>
+        <point x="209" y="199"></point>
+        <point x="225" y="225"></point>
+        <point x="225" y="255"></point>
+        <point x="195" y="270"></point>
+        <point x="165" y="255"></point>
+        <point x="150" y="240"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="165"></point>
+        <point x="89" y="198"></point>
+        <point x="75" y="225"></point>
+        <point x="75" y="255"></point>
+        <point x="105" y="270"></point>
+        <point x="135" y="255"></point>
+        <point x="150" y="240"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="139" y="148"></point>
+        <point x="100" y="105"></point>
+        <point x="55" y="90"></point>
+        <point x="25" y="90"></point>
+        <point x="10" y="105"></point>
+        <point x="10" y="135"></point>
+        <point x="25" y="180"></point>
+        <point x="40" y="195"></point>
+        <point x="85" y="194"></point>
+        <point x="139" y="163"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="162" y="150"></point>
+        <point x="200" y="105"></point>
+        <point x="245" y="90"></point>
+        <point x="275" y="90"></point>
+        <point x="290" y="105"></point>
+        <point x="290" y="135"></point>
+        <point x="275" y="180"></point>
+        <point x="260" y="195"></point>
+        <point x="215" y="195"></point>
+        <point x="162" y="165"></point>
+      </polygon>
+      <polygon color="255" filled="true" marked="false">
+        <point x="150" y="255"></point>
+        <point x="135" y="225"></point>
+        <point x="120" y="150"></point>
+        <point x="135" y="120"></point>
+        <point x="150" y="105"></point>
+        <point x="165" y="120"></point>
+        <point x="180" y="150"></point>
+        <point x="165" y="225"></point>
+      </polygon>
+      <circle x="135" y="90" marked="false" color="255" diameter="30" filled="true"></circle>
+      <line endX="195" startY="105" marked="false" color="255" endY="60" startX="150"></line>
+      <line endX="105" startY="105" marked="false" color="255" endY="60" startX="150"></line>
+    </shape>
+    <shape name="car" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="300" y="180"></point>
+        <point x="279" y="164"></point>
+        <point x="261" y="144"></point>
+        <point x="240" y="135"></point>
+        <point x="226" y="132"></point>
+        <point x="213" y="106"></point>
+        <point x="203" y="84"></point>
+        <point x="185" y="63"></point>
+        <point x="159" y="50"></point>
+        <point x="135" y="50"></point>
+        <point x="75" y="60"></point>
+        <point x="0" y="150"></point>
+        <point x="0" y="165"></point>
+        <point x="0" y="225"></point>
+        <point x="300" y="225"></point>
+        <point x="300" y="180"></point>
+      </polygon>
+      <circle x="180" y="180" marked="false" color="255" diameter="90" filled="true"></circle>
+      <circle x="30" y="180" marked="false" color="255" diameter="90" filled="true"></circle>
+      <polygon color="255" filled="true" marked="false">
+        <point x="162" y="80"></point>
+        <point x="132" y="78"></point>
+        <point x="134" y="135"></point>
+        <point x="209" y="135"></point>
+        <point x="194" y="105"></point>
+        <point x="189" y="96"></point>
+        <point x="180" y="89"></point>
+      </polygon>
+      <circle x="47" y="195" marked="true" color="-1920102913" diameter="58" filled="true"></circle>
+      <circle x="195" y="195" marked="true" color="-1920102913" diameter="58" filled="true"></circle>
+    </shape>
+    <shape name="circle" rotatable="false" editableColorIndex="0">
+      <circle x="0" y="0" marked="true" color="-1920102913" diameter="300" filled="true"></circle>
+    </shape>
+    <shape name="circle 2" rotatable="false" editableColorIndex="0">
+      <circle x="0" y="0" marked="true" color="-1920102913" diameter="300" filled="true"></circle>
+      <circle x="30" y="30" marked="false" color="255" diameter="240" filled="true"></circle>
+    </shape>
+    <shape name="cow" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="200" y="193"></point>
+        <point x="197" y="249"></point>
+        <point x="179" y="249"></point>
+        <point x="177" y="196"></point>
+        <point x="166" y="187"></point>
+        <point x="140" y="189"></point>
+        <point x="93" y="191"></point>
+        <point x="78" y="179"></point>
+        <point x="72" y="211"></point>
+        <point x="49" y="209"></point>
+        <point x="48" y="181"></point>
+        <point x="37" y="149"></point>
+        <point x="25" y="120"></point>
+        <point x="25" y="89"></point>
+        <point x="45" y="72"></point>
+        <point x="103" y="84"></point>
+        <point x="179" y="75"></point>
+        <point x="198" y="76"></point>
+        <point x="252" y="64"></point>
+        <point x="272" y="81"></point>
+        <point x="293" y="103"></point>
+        <point x="285" y="121"></point>
+        <point x="255" y="121"></point>
+        <point x="242" y="118"></point>
+        <point x="224" y="167"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="73" y="210"></point>
+        <point x="86" y="251"></point>
+        <point x="62" y="249"></point>
+        <point x="48" y="208"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="25" y="114"></point>
+        <point x="16" y="195"></point>
+        <point x="9" y="204"></point>
+        <point x="23" y="213"></point>
+        <point x="25" y="200"></point>
+        <point x="39" y="123"></point>
+      </polygon>
+    </shape>
+    <shape name="cylinder" rotatable="false" editableColorIndex="0">
+      <circle x="0" y="0" marked="true" color="-1920102913" diameter="300" filled="true"></circle>
+    </shape>
+    <shape name="dot" rotatable="false" editableColorIndex="0">
+      <circle x="90" y="90" marked="true" color="-1920102913" diameter="120" filled="true"></circle>
+    </shape>
+    <shape name="face happy" rotatable="false" editableColorIndex="0">
+      <circle x="8" y="8" marked="true" color="-1920102913" diameter="285" filled="true"></circle>
+      <circle x="60" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <circle x="180" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <polygon color="255" filled="true" marked="false">
+        <point x="150" y="255"></point>
+        <point x="90" y="239"></point>
+        <point x="62" y="213"></point>
+        <point x="47" y="191"></point>
+        <point x="67" y="179"></point>
+        <point x="90" y="203"></point>
+        <point x="109" y="218"></point>
+        <point x="150" y="225"></point>
+        <point x="192" y="218"></point>
+        <point x="210" y="203"></point>
+        <point x="227" y="181"></point>
+        <point x="251" y="194"></point>
+        <point x="236" y="217"></point>
+        <point x="212" y="240"></point>
+      </polygon>
+    </shape>
+    <shape name="face neutral" rotatable="false" editableColorIndex="0">
+      <circle x="8" y="7" marked="true" color="-1920102913" diameter="285" filled="true"></circle>
+      <circle x="60" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <circle x="180" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <rectangle endX="240" startY="195" marked="false" color="255" endY="225" startX="60" filled="true"></rectangle>
+    </shape>
+    <shape name="face sad" rotatable="false" editableColorIndex="0">
+      <circle x="8" y="8" marked="true" color="-1920102913" diameter="285" filled="true"></circle>
+      <circle x="60" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <circle x="180" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <polygon color="255" filled="true" marked="false">
+        <point x="150" y="168"></point>
+        <point x="90" y="184"></point>
+        <point x="62" y="210"></point>
+        <point x="47" y="232"></point>
+        <point x="67" y="244"></point>
+        <point x="90" y="220"></point>
+        <point x="109" y="205"></point>
+        <point x="150" y="198"></point>
+        <point x="192" y="205"></point>
+        <point x="210" y="220"></point>
+        <point x="227" y="242"></point>
+        <point x="251" y="229"></point>
+        <point x="236" y="206"></point>
+        <point x="212" y="183"></point>
+      </polygon>
+    </shape>
+    <shape name="fish" rotatable="false" editableColorIndex="0">
+      <polygon color="-1" filled="true" marked="false">
+        <point x="44" y="131"></point>
+        <point x="21" y="87"></point>
+        <point x="15" y="86"></point>
+        <point x="0" y="120"></point>
+        <point x="15" y="150"></point>
+        <point x="0" y="180"></point>
+        <point x="13" y="214"></point>
+        <point x="20" y="212"></point>
+        <point x="45" y="166"></point>
+      </polygon>
+      <polygon color="-1" filled="true" marked="false">
+        <point x="135" y="195"></point>
+        <point x="119" y="235"></point>
+        <point x="95" y="218"></point>
+        <point x="76" y="210"></point>
+        <point x="46" y="204"></point>
+        <point x="60" y="165"></point>
+      </polygon>
+      <polygon color="-1" filled="true" marked="false">
+        <point x="75" y="45"></point>
+        <point x="83" y="77"></point>
+        <point x="71" y="103"></point>
+        <point x="86" y="114"></point>
+        <point x="166" y="78"></point>
+        <point x="135" y="60"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="30" y="136"></point>
+        <point x="151" y="77"></point>
+        <point x="226" y="81"></point>
+        <point x="280" y="119"></point>
+        <point x="292" y="146"></point>
+        <point x="292" y="160"></point>
+        <point x="287" y="170"></point>
+        <point x="270" y="195"></point>
+        <point x="195" y="210"></point>
+        <point x="151" y="212"></point>
+        <point x="30" y="166"></point>
+      </polygon>
+      <circle x="215" y="106" marked="false" color="255" diameter="30" filled="true"></circle>
+    </shape>
+    <shape name="flag" rotatable="false" editableColorIndex="0">
+      <rectangle endX="75" startY="15" marked="true" color="-1920102913" endY="300" startX="60" filled="true"></rectangle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="90" y="150"></point>
+        <point x="270" y="90"></point>
+        <point x="90" y="30"></point>
+      </polygon>
+      <line endX="90" startY="135" marked="true" color="-1920102913" endY="135" startX="75"></line>
+      <line endX="90" startY="45" marked="true" color="-1920102913" endY="45" startX="75"></line>
+    </shape>
+    <shape name="flower" rotatable="false" editableColorIndex="0">
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="135" y="120"></point>
+        <point x="165" y="165"></point>
+        <point x="180" y="210"></point>
+        <point x="180" y="240"></point>
+        <point x="150" y="300"></point>
+        <point x="165" y="300"></point>
+        <point x="195" y="240"></point>
+        <point x="195" y="195"></point>
+        <point x="165" y="135"></point>
+      </polygon>
+      <circle x="85" y="132" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="130" y="147" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="192" y="85" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="85" y="40" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="177" y="40" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="177" y="132" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="70" y="85" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="130" y="25" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="96" y="51" marked="true" color="-1920102913" diameter="108" filled="true"></circle>
+      <circle x="113" y="68" marked="false" color="255" diameter="74" filled="true"></circle>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="189" y="233"></point>
+        <point x="219" y="188"></point>
+        <point x="249" y="173"></point>
+        <point x="279" y="188"></point>
+        <point x="234" y="218"></point>
+      </polygon>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="180" y="255"></point>
+        <point x="150" y="210"></point>
+        <point x="105" y="210"></point>
+        <point x="75" y="240"></point>
+        <point x="135" y="240"></point>
+      </polygon>
+    </shape>
+    <shape name="house" rotatable="false" editableColorIndex="0">
+      <rectangle endX="255" startY="120" marked="true" color="-1920102913" endY="285" startX="45" filled="true"></rectangle>
+      <rectangle endX="180" startY="210" marked="false" color="255" endY="285" startX="120" filled="true"></rectangle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="15" y="120"></point>
+        <point x="150" y="15"></point>
+        <point x="285" y="120"></point>
+      </polygon>
+      <line endX="270" startY="120" marked="false" color="255" endY="120" startX="30"></line>
+    </shape>
+    <shape name="leaf" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="210"></point>
+        <point x="135" y="195"></point>
+        <point x="120" y="210"></point>
+        <point x="60" y="210"></point>
+        <point x="30" y="195"></point>
+        <point x="60" y="180"></point>
+        <point x="60" y="165"></point>
+        <point x="15" y="135"></point>
+        <point x="30" y="120"></point>
+        <point x="15" y="105"></point>
+        <point x="40" y="104"></point>
+        <point x="45" y="90"></point>
+        <point x="60" y="90"></point>
+        <point x="90" y="105"></point>
+        <point x="105" y="120"></point>
+        <point x="120" y="120"></point>
+        <point x="105" y="60"></point>
+        <point x="120" y="60"></point>
+        <point x="135" y="30"></point>
+        <point x="150" y="15"></point>
+        <point x="165" y="30"></point>
+        <point x="180" y="60"></point>
+        <point x="195" y="60"></point>
+        <point x="180" y="120"></point>
+        <point x="195" y="120"></point>
+        <point x="210" y="105"></point>
+        <point x="240" y="90"></point>
+        <point x="255" y="90"></point>
+        <point x="263" y="104"></point>
+        <point x="285" y="105"></point>
+        <point x="270" y="120"></point>
+        <point x="285" y="135"></point>
+        <point x="240" y="165"></point>
+        <point x="240" y="180"></point>
+        <point x="270" y="195"></point>
+        <point x="240" y="210"></point>
+        <point x="180" y="210"></point>
+        <point x="165" y="195"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="135" y="195"></point>
+        <point x="135" y="240"></point>
+        <point x="120" y="255"></point>
+        <point x="105" y="255"></point>
+        <point x="105" y="285"></point>
+        <point x="135" y="285"></point>
+        <point x="165" y="240"></point>
+        <point x="165" y="195"></point>
+      </polygon>
+    </shape>
+    <shape name="line" rotatable="true" editableColorIndex="0">
+      <line endX="150" startY="0" marked="true" color="-1920102913" endY="300" startX="150"></line>
+    </shape>
+    <shape name="line half" rotatable="true" editableColorIndex="0">
+      <line endX="150" startY="0" marked="true" color="-1920102913" endY="150" startX="150"></line>
+    </shape>
+    <shape name="pentagon" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="15"></point>
+        <point x="15" y="120"></point>
+        <point x="60" y="285"></point>
+        <point x="240" y="285"></point>
+        <point x="285" y="120"></point>
+      </polygon>
+    </shape>
+    <shape name="person" rotatable="false" editableColorIndex="0">
+      <circle x="110" y="5" marked="true" color="-1920102913" diameter="80" filled="true"></circle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="105" y="90"></point>
+        <point x="120" y="195"></point>
+        <point x="90" y="285"></point>
+        <point x="105" y="300"></point>
+        <point x="135" y="300"></point>
+        <point x="150" y="225"></point>
+        <point x="165" y="300"></point>
+        <point x="195" y="300"></point>
+        <point x="210" y="285"></point>
+        <point x="180" y="195"></point>
+        <point x="195" y="90"></point>
+      </polygon>
+      <rectangle endX="172" startY="79" marked="true" color="-1920102913" endY="94" startX="127" filled="true"></rectangle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="195" y="90"></point>
+        <point x="240" y="150"></point>
+        <point x="225" y="180"></point>
+        <point x="165" y="105"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="105" y="90"></point>
+        <point x="60" y="150"></point>
+        <point x="75" y="180"></point>
+        <point x="135" y="105"></point>
+      </polygon>
+    </shape>
+    <shape name="plant" rotatable="false" editableColorIndex="0">
+      <rectangle endX="165" startY="90" marked="true" color="-1920102913" endY="300" startX="135" filled="true"></rectangle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="135" y="255"></point>
+        <point x="90" y="210"></point>
+        <point x="45" y="195"></point>
+        <point x="75" y="255"></point>
+        <point x="135" y="285"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="165" y="255"></point>
+        <point x="210" y="210"></point>
+        <point x="255" y="195"></point>
+        <point x="225" y="255"></point>
+        <point x="165" y="285"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="135" y="180"></point>
+        <point x="90" y="135"></point>
+        <point x="45" y="120"></point>
+        <point x="75" y="180"></point>
+        <point x="135" y="210"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="165" y="180"></point>
+        <point x="165" y="210"></point>
+        <point x="225" y="180"></point>
+        <point x="255" y="120"></point>
+        <point x="210" y="135"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="135" y="105"></point>
+        <point x="90" y="60"></point>
+        <point x="45" y="45"></point>
+        <point x="75" y="105"></point>
+        <point x="135" y="135"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="165" y="105"></point>
+        <point x="165" y="135"></point>
+        <point x="225" y="105"></point>
+        <point x="255" y="45"></point>
+        <point x="210" y="60"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="135" y="90"></point>
+        <point x="120" y="45"></point>
+        <point x="150" y="15"></point>
+        <point x="180" y="45"></point>
+        <point x="165" y="90"></point>
+      </polygon>
+    </shape>
+    <shape name="sheep" rotatable="false" editableColorIndex="15">
+      <circle x="203" y="65" marked="true" color="-1" diameter="88" filled="true"></circle>
+      <circle x="70" y="65" marked="true" color="-1" diameter="162" filled="true"></circle>
+      <circle x="150" y="105" marked="true" color="-1" diameter="120" filled="true"></circle>
+      <polygon color="-1920102913" filled="true" marked="false">
+        <point x="218" y="120"></point>
+        <point x="240" y="165"></point>
+        <point x="255" y="165"></point>
+        <point x="278" y="120"></point>
+      </polygon>
+      <circle x="214" y="72" marked="false" color="-1920102913" diameter="67" filled="true"></circle>
+      <rectangle endX="179" startY="223" marked="true" color="-1" endY="298" startX="164" filled="true"></rectangle>
+      <polygon color="-1" filled="true" marked="true">
+        <point x="45" y="285"></point>
+        <point x="30" y="285"></point>
+        <point x="30" y="240"></point>
+        <point x="15" y="195"></point>
+        <point x="45" y="210"></point>
+      </polygon>
+      <circle x="3" y="83" marked="true" color="-1" diameter="150" filled="true"></circle>
+      <rectangle endX="80" startY="221" marked="true" color="-1" endY="296" startX="65" filled="true"></rectangle>
+      <polygon color="-1" filled="true" marked="true">
+        <point x="195" y="285"></point>
+        <point x="210" y="285"></point>
+        <point x="210" y="240"></point>
+        <point x="240" y="210"></point>
+        <point x="195" y="210"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="false">
+        <point x="276" y="85"></point>
+        <point x="285" y="105"></point>
+        <point x="302" y="99"></point>
+        <point x="294" y="83"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="false">
+        <point x="219" y="85"></point>
+        <point x="210" y="105"></point>
+        <point x="193" y="99"></point>
+        <point x="201" y="83"></point>
+      </polygon>
+    </shape>
+    <shape name="square" rotatable="false" editableColorIndex="0">
+      <rectangle endX="270" startY="30" marked="true" color="-1920102913" endY="270" startX="30" filled="true"></rectangle>
+    </shape>
+    <shape name="square 2" rotatable="false" editableColorIndex="0">
+      <rectangle endX="270" startY="30" marked="true" color="-1920102913" endY="270" startX="30" filled="true"></rectangle>
+      <rectangle endX="240" startY="60" marked="false" color="255" endY="240" startX="60" filled="true"></rectangle>
+    </shape>
+    <shape name="star" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="151" y="1"></point>
+        <point x="185" y="108"></point>
+        <point x="298" y="108"></point>
+        <point x="207" y="175"></point>
+        <point x="242" y="282"></point>
+        <point x="151" y="216"></point>
+        <point x="59" y="282"></point>
+        <point x="94" y="175"></point>
+        <point x="3" y="108"></point>
+        <point x="116" y="108"></point>
+      </polygon>
+    </shape>
+    <shape name="target" rotatable="false" editableColorIndex="0">
+      <circle x="0" y="0" marked="true" color="-1920102913" diameter="300" filled="true"></circle>
+      <circle x="30" y="30" marked="false" color="255" diameter="240" filled="true"></circle>
+      <circle x="60" y="60" marked="true" color="-1920102913" diameter="180" filled="true"></circle>
+      <circle x="90" y="90" marked="false" color="255" diameter="120" filled="true"></circle>
+      <circle x="120" y="120" marked="true" color="-1920102913" diameter="60" filled="true"></circle>
+    </shape>
+    <shape name="tree" rotatable="false" editableColorIndex="0">
+      <circle x="118" y="3" marked="true" color="-1920102913" diameter="94" filled="true"></circle>
+      <rectangle endX="180" startY="195" marked="false" color="-1653716737" endY="300" startX="120" filled="true"></rectangle>
+      <circle x="65" y="21" marked="true" color="-1920102913" diameter="108" filled="true"></circle>
+      <circle x="116" y="41" marked="true" color="-1920102913" diameter="127" filled="true"></circle>
+      <circle x="45" y="90" marked="true" color="-1920102913" diameter="120" filled="true"></circle>
+      <circle x="104" y="74" marked="true" color="-1920102913" diameter="152" filled="true"></circle>
+    </shape>
+    <shape name="triangle" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="30"></point>
+        <point x="15" y="255"></point>
+        <point x="285" y="255"></point>
+      </polygon>
+    </shape>
+    <shape name="triangle 2" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="30"></point>
+        <point x="15" y="255"></point>
+        <point x="285" y="255"></point>
+      </polygon>
+      <polygon color="255" filled="true" marked="false">
+        <point x="151" y="99"></point>
+        <point x="225" y="223"></point>
+        <point x="75" y="224"></point>
+      </polygon>
+    </shape>
+    <shape name="truck" rotatable="false" editableColorIndex="0">
+      <rectangle endX="195" startY="45" marked="true" color="-1920102913" endY="187" startX="4" filled="true"></rectangle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="296" y="193"></point>
+        <point x="296" y="150"></point>
+        <point x="259" y="134"></point>
+        <point x="244" y="104"></point>
+        <point x="208" y="104"></point>
+        <point x="207" y="194"></point>
+      </polygon>
+      <rectangle endX="195" startY="60" marked="false" color="-1" endY="105" startX="195" filled="true"></rectangle>
+      <polygon color="255" filled="true" marked="false">
+        <point x="238" y="112"></point>
+        <point x="252" y="141"></point>
+        <point x="219" y="141"></point>
+        <point x="218" y="112"></point>
+      </polygon>
+      <circle x="234" y="174" marked="false" color="255" diameter="42" filled="true"></circle>
+      <rectangle endX="214" startY="185" marked="true" color="-1920102913" endY="194" startX="181" filled="true"></rectangle>
+      <circle x="144" y="174" marked="false" color="255" diameter="42" filled="true"></circle>
+      <circle x="24" y="174" marked="false" color="255" diameter="42" filled="true"></circle>
+      <circle x="24" y="174" marked="true" color="-1920102913" diameter="42" filled="false"></circle>
+      <circle x="144" y="174" marked="true" color="-1920102913" diameter="42" filled="false"></circle>
+      <circle x="234" y="174" marked="true" color="-1920102913" diameter="42" filled="false"></circle>
+    </shape>
+    <shape name="turtle" rotatable="true" editableColorIndex="0">
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="215" y="204"></point>
+        <point x="240" y="233"></point>
+        <point x="246" y="254"></point>
+        <point x="228" y="266"></point>
+        <point x="215" y="252"></point>
+        <point x="193" y="210"></point>
+      </polygon>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="195" y="90"></point>
+        <point x="225" y="75"></point>
+        <point x="245" y="75"></point>
+        <point x="260" y="89"></point>
+        <point x="269" y="108"></point>
+        <point x="261" y="124"></point>
+        <point x="240" y="105"></point>
+        <point x="225" y="105"></point>
+        <point x="210" y="105"></point>
+      </polygon>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="105" y="90"></point>
+        <point x="75" y="75"></point>
+        <point x="55" y="75"></point>
+        <point x="40" y="89"></point>
+        <point x="31" y="108"></point>
+        <point x="39" y="124"></point>
+        <point x="60" y="105"></point>
+        <point x="75" y="105"></point>
+        <point x="90" y="105"></point>
+      </polygon>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="132" y="85"></point>
+        <point x="134" y="64"></point>
+        <point x="107" y="51"></point>
+        <point x="108" y="17"></point>
+        <point x="150" y="2"></point>
+        <point x="192" y="18"></point>
+        <point x="192" y="52"></point>
+        <point x="169" y="65"></point>
+        <point x="172" y="87"></point>
+      </polygon>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="85" y="204"></point>
+        <point x="60" y="233"></point>
+        <point x="54" y="254"></point>
+        <point x="72" y="266"></point>
+        <point x="85" y="252"></point>
+        <point x="107" y="210"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="119" y="75"></point>
+        <point x="179" y="75"></point>
+        <point x="209" y="101"></point>
+        <point x="224" y="135"></point>
+        <point x="220" y="225"></point>
+        <point x="175" y="261"></point>
+        <point x="128" y="261"></point>
+        <point x="81" y="224"></point>
+        <point x="74" y="135"></point>
+        <point x="88" y="99"></point>
+      </polygon>
+    </shape>
+    <shape name="wheel" rotatable="false" editableColorIndex="0">
+      <circle x="3" y="3" marked="true" color="-1920102913" diameter="294" filled="true"></circle>
+      <circle x="30" y="30" marked="false" color="255" diameter="240" filled="true"></circle>
+      <line endX="150" startY="285" marked="true" color="-1920102913" endY="15" startX="150"></line>
+      <line endX="285" startY="150" marked="true" color="-1920102913" endY="150" startX="15"></line>
+      <circle x="120" y="120" marked="true" color="-1920102913" diameter="60" filled="true"></circle>
+      <line endX="79" startY="40" marked="true" color="-1920102913" endY="269" startX="216"></line>
+      <line endX="269" startY="84" marked="true" color="-1920102913" endY="221" startX="40"></line>
+      <line endX="269" startY="216" marked="true" color="-1920102913" endY="79" startX="40"></line>
+      <line endX="221" startY="40" marked="true" color="-1920102913" endY="269" startX="84"></line>
+    </shape>
+    <shape name="wolf" rotatable="false" editableColorIndex="0">
+      <polygon color="255" filled="true" marked="false">
+        <point x="253" y="133"></point>
+        <point x="245" y="131"></point>
+        <point x="245" y="133"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="2" y="194"></point>
+        <point x="13" y="197"></point>
+        <point x="30" y="191"></point>
+        <point x="38" y="193"></point>
+        <point x="38" y="205"></point>
+        <point x="20" y="226"></point>
+        <point x="20" y="257"></point>
+        <point x="27" y="265"></point>
+        <point x="38" y="266"></point>
+        <point x="40" y="260"></point>
+        <point x="31" y="253"></point>
+        <point x="31" y="230"></point>
+        <point x="60" y="206"></point>
+        <point x="68" y="198"></point>
+        <point x="75" y="209"></point>
+        <point x="66" y="228"></point>
+        <point x="65" y="243"></point>
+        <point x="82" y="261"></point>
+        <point x="84" y="268"></point>
+        <point x="100" y="267"></point>
+        <point x="103" y="261"></point>
+        <point x="77" y="239"></point>
+        <point x="79" y="231"></point>
+        <point x="100" y="207"></point>
+        <point x="98" y="196"></point>
+        <point x="119" y="201"></point>
+        <point x="143" y="202"></point>
+        <point x="160" y="195"></point>
+        <point x="166" y="210"></point>
+        <point x="172" y="213"></point>
+        <point x="173" y="238"></point>
+        <point x="167" y="251"></point>
+        <point x="160" y="248"></point>
+        <point x="154" y="265"></point>
+        <point x="169" y="264"></point>
+        <point x="178" y="247"></point>
+        <point x="186" y="240"></point>
+        <point x="198" y="260"></point>
+        <point x="200" y="271"></point>
+        <point x="217" y="271"></point>
+        <point x="219" y="262"></point>
+        <point x="207" y="258"></point>
+        <point x="195" y="230"></point>
+        <point x="192" y="198"></point>
+        <point x="210" y="184"></point>
+        <point x="227" y="164"></point>
+        <point x="242" y="144"></point>
+        <point x="259" y="145"></point>
+        <point x="284" y="151"></point>
+        <point x="277" y="141"></point>
+        <point x="293" y="140"></point>
+        <point x="299" y="134"></point>
+        <point x="297" y="127"></point>
+        <point x="273" y="119"></point>
+        <point x="270" y="105"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="-1" y="195"></point>
+        <point x="14" y="180"></point>
+        <point x="36" y="166"></point>
+        <point x="40" y="153"></point>
+        <point x="53" y="140"></point>
+        <point x="82" y="131"></point>
+        <point x="134" y="133"></point>
+        <point x="159" y="126"></point>
+        <point x="188" y="115"></point>
+        <point x="227" y="108"></point>
+        <point x="236" y="102"></point>
+        <point x="238" y="98"></point>
+        <point x="268" y="86"></point>
+        <point x="269" y="92"></point>
+        <point x="281" y="87"></point>
+        <point x="269" y="103"></point>
+        <point x="269" y="113"></point>
+      </polygon>
+    </shape>
+    <shape name="x" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="270" y="75"></point>
+        <point x="225" y="30"></point>
+        <point x="30" y="225"></point>
+        <point x="75" y="270"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="30" y="75"></point>
+        <point x="75" y="30"></point>
+        <point x="270" y="225"></point>
+        <point x="225" y="270"></point>
+      </polygon>
+    </shape>
+  </turtleShapes>
+  <linkShapes>
+    <shape name="default" curviness="0.0">
+      <lines>
+        <line x="-0.2" visible="false">
+          <dash value="0.0"></dash>
+          <dash value="1.0"></dash>
+        </line>
+        <line x="0.0" visible="true">
+          <dash value="1.0"></dash>
+          <dash value="0.0"></dash>
+        </line>
+        <line x="0.2" visible="false">
+          <dash value="0.0"></dash>
+          <dash value="1.0"></dash>
+        </line>
+      </lines>
+      <indicator>
+        <shape name="link direction" rotatable="true" editableColorIndex="0">
+          <line endX="90" startY="150" marked="true" color="-1920102913" endY="180" startX="150"></line>
+          <line endX="210" startY="150" marked="true" color="-1920102913" endY="180" startX="150"></line>
+        </shape>
+      </indicator>
+    </shape>
+  </linkShapes>
+  <previewCommands>setup repeat 75 [ go ]</previewCommands>
+</model>
