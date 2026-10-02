@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <model version="NetLogo 7.0.4" snapToGrid="true">
-  <code><![CDATA[;; Stage 6: scheduled and stochastic supplier outages.
-;; New failures happen after orders are placed; both outage types stop delivery.
-;; Inventory, supplier switching, and changing prices come in later stages.
+  <code><![CDATA[;; Stage 9: lagged price feedback and cost-weighted orders within fixed contracts.
+;; Known outages are checked before orders; new failures occur after orders.
+;; Setup draws a new map; Replay rebuilds the selected map and economic scenario.
 
 breed [suppliers supplier]
 breed [manufacturers manufacturer]
@@ -13,7 +13,7 @@ globals [
   demand-min-setting
   demand-max-setting
   partner-count-setting
-  route-seed-setting
+  map-seed-setting
   outage-supplier-setting
   outage-start-setting
   outage-duration-setting
@@ -23,21 +23,28 @@ globals [
   scenario-seed-setting
   settings-ready?
   active-settings
-  route-rates
+  transport-cost-per-distance
+  price-response
   relationship-fee
+  holding-fee-per-unit
+  initial-inventory-total
   period-demand
-  period-delivered
+  period-received
+  period-fulfilled
   period-unmet
   cumulative-demand
-  cumulative-delivered
+  cumulative-received
+  cumulative-fulfilled
   cumulative-unmet
   period-purchase-cost
   period-transport-cost
   period-relationship-cost
+  period-holding-cost
   period-total-cost
   cumulative-purchase-cost
   cumulative-transport-cost
   cumulative-relationship-cost
+  cumulative-holding-cost
   cumulative-total-cost
 ]
 
@@ -46,7 +53,10 @@ suppliers-own [
   orders-received
   amount-shipped
   fill-ratio
+  base-price
   unit-price
+  capacity-utilization
+  pricing-utilization
   scheduled-outage?
   random-outage?
   random-outage-through
@@ -55,6 +65,9 @@ suppliers-own [
 ]
 
 contracts-own [
+  route-distance
+  landed-unit-cost
+  order-share
   units-ordered
   units-delivered
   transport-rate
@@ -63,13 +76,21 @@ contracts-own [
 ]
 
 manufacturers-own [
+  manufacturer-id
   demand
+  initial-inventory
+  inventory
+  inventory-at-start
+  inventory-target
   order-quantity
+  unplaced-order
   amount-received
+  production-met
   unmet-demand
   buyer-purchase-cost
   buyer-transport-cost
   buyer-relationship-cost
+  buyer-holding-cost
   buyer-total-cost
   buyer-cumulative-cost
 ]
@@ -79,11 +100,11 @@ to startup
 end
 
 to reset-parameters
-  set capacity-setting 50
+  set capacity-setting 100
   set demand-min-setting 30
   set demand-max-setting 50
   set partner-count-setting 1
-  set route-seed-setting 2026
+  set map-seed-setting 2026
   set outage-supplier-setting 0
   set outage-start-setting 3
   set outage-duration-setting 2
@@ -103,7 +124,7 @@ to read-interface-settings
   set demand-min-setting runresult "min-demand"
   set demand-max-setting runresult "max-demand"
   set partner-count-setting runresult "supplier-count"
-  set route-seed-setting runresult "route-seed"
+  set map-seed-setting runresult "map-seed"
   set outage-supplier-setting runresult "outage-supplier"
   set outage-start-setting runresult "outage-start"
   set outage-duration-setting runresult "outage-duration"
@@ -116,7 +137,7 @@ end
 to-report settings-snapshot
   ;; Keep this order aligned with restore-settings below.
   report (list capacity-setting demand-min-setting demand-max-setting
-    partner-count-setting route-seed-setting outage-supplier-setting
+    partner-count-setting map-seed-setting outage-supplier-setting
     outage-start-setting outage-duration-setting outage-risk-setting
     duration-min-setting duration-max-setting scenario-seed-setting)
 end
@@ -126,7 +147,7 @@ to restore-settings [values]
   set demand-min-setting item 1 values
   set demand-max-setting item 2 values
   set partner-count-setting item 3 values
-  set route-seed-setting item 4 values
+  set map-seed-setting item 4 values
   set outage-supplier-setting item 5 values
   set outage-start-setting item 6 values
   set outage-duration-setting item 7 values
@@ -139,117 +160,190 @@ end
 
 to validate-settings
   if demand-min-setting > demand-max-setting [
-    error "Minimum demand exceeds maximum demand. Correct the sliders and run Setup."
+    error "Minimum demand exceeds maximum demand. Correct the sliders, then click Setup or Replay."
   ]
   if duration-min-setting > duration-max-setting [
-    error "Minimum random outage duration exceeds maximum duration. Correct the sliders and run Setup."
+    error "Minimum random outage duration exceeds maximum duration. Correct the sliders, then click Setup or Replay."
   ]
 end
 
 to setup
+  ;; Validate before changing the map seed, so invalid input preserves the run.
   ensure-settings
   read-interface-settings
   validate-settings
-  ;; clear-all resets globals, so retain one ordered snapshot of the controls.
+  let previous-seed map-seed-setting
+  let next-seed 1 + random 9999
+  while [next-seed = previous-seed] [ set next-seed 1 + random 9999 ]
+  run (word "set map-seed " next-seed)
+  replay-setup
+end
+
+to replay-setup
+  ensure-settings
+  read-interface-settings
+  validate-settings
+  ;; Interface controls survive clear-all; retain their internal snapshot too.
   let selected-settings settings-snapshot
   clear-all
   restore-settings selected-settings
   set active-settings selected-settings
   set relationship-fee 50
-  ask patches [ set pcolor (rgb 17 27 43) ]
+  set holding-fee-per-unit 1
+  ;; A purchase-price discount of 15 offsets 5 extra map units of travel.
+  ;; Ranking and actual freight charges use the same rate.
+  set transport-cost-per-distance 3
+  set price-response 0.20
   create-network
   reset-network-totals
   reset-ticks
 end
 
+to-report supplier-population
+  report 5
+end
+
+to-report manufacturer-population
+  report 10
+end
+
 to create-network
-  ;; Fixed positions keep the procurement links easy to follow.
-  create-suppliers 3 [
-    setxy -10 (10 - who * 10)
-    set shape "box"
-    set size 3
-    set color (rgb 46 196 168)
-    set label (word "S" (who + 1))
-    set label-color white
-    set capacity capacity-setting
-    set orders-received 0
-    set amount-shipped 0
-    set fill-ratio 1
-    set unit-price 100
-    set scheduled-outage? false
-    set random-outage? false
-    set random-outage-through 0
-    set outage-active? false
-    set available-capacity capacity
-  ]
+  initialize-suppliers
+  initialize-manufacturers
+  generate-map
+  establish-contracts
+end
 
-  ;; The same scenario seed gives every strategy the same three demands.
+to initialize-suppliers
+  ;; Supplier attributes use their own stream, independent of map and strategy.
   with-local-randomness [
-    random-seed scenario-seed-setting
-    create-manufacturers 3 [
-      let index (who - 3)
-      setxy 10 (10 - index * 10)
-      set shape "house"
-      set size 2.8
-      set color (rgb 100 160 245)
+    random-seed (scenario-seed-setting + 30000)
+    create-suppliers supplier-population [
+      set shape "box"
+      set size 2.1
+      set color (rgb 46 196 168)
+      set label (word "S" (who + 1) "  0→0")
       set label-color white
-      set demand demand-min-setting +
-        random (demand-max-setting - demand-min-setting + 1)
-      set label (word "M" (index + 1) "  0/" demand)
-      set order-quantity 0
-      set amount-received 0
-      set unmet-demand 0
-      set buyer-purchase-cost 0
-      set buyer-transport-cost 0
-      set buyer-relationship-cost 0
-      set buyer-total-cost 0
-      set buyer-cumulative-cost 0
     ]
-  ]
-
-  ;; Sample all nine potential route rates with a separate, fixed seed.
-  ;; This keeps transport conditions identical across sourcing strategies.
-  with-local-randomness [
-    random-seed route-seed-setting
-    set route-rates n-values 3 [
-      n-values 3 [ precision (0.5 + random-float 1) 2 ]
-    ]
-  ]
-
-  ;; Fixed preference lists make the three strategies easy to compare.
-  ;; The first supplier preserves the previous stage's links.
-  let supplier-list sort suppliers
-  ask manufacturers [
-    let index (who - 3)
-    let preferences item index [[0 1 2] [1 2 0] [0 2 1]]
-    foreach (sublist preferences 0 partner-count-setting) [ supplier-index ->
-      create-contract-to (item supplier-index supplier-list) [
-        set color (rgb 85 112 139)
-        set thickness 0.12
-        set units-ordered 0
-        set units-delivered 0
-        set transport-rate item supplier-index (item index route-rates)
-        set purchase-charge 0
-        set transport-charge 0
+    foreach sort suppliers [source ->
+      ask source [
+        set base-price 80 + random 41
+        set unit-price base-price
+        ;; Scale capacity with the smaller buyer population: default 80–120.
+        set capacity capacity-setting * (80 + random 41) / 100
+        set available-capacity capacity
+        set fill-ratio 1
+        set scheduled-outage? false
+        set random-outage? false
+        set outage-active? false
       ]
     ]
   ]
 end
 
+to initialize-manufacturers
+  with-local-randomness [
+    random-seed scenario-seed-setting
+    create-manufacturers manufacturer-population [
+      set manufacturer-id who - supplier-population + 1
+      set shape "house"
+      set size 2.1
+      set color (rgb 100 160 245)
+      set label-color white
+    ]
+    foreach sort manufacturers [buyer ->
+      ask buyer [
+        set demand demand-min-setting +
+          random (demand-max-setting - demand-min-setting + 1)
+        set inventory-target demand
+        set initial-inventory 40 + random 41
+        set inventory initial-inventory
+        set inventory-at-start inventory
+        set label (word "M" manufacturer-id "  0/" demand)
+      ]
+    ]
+  ]
+end
+
+to generate-map
+  ;; Jittered cells keep 15 labels legible while randomizing each node's location.
+  ;; Leave extra space on the left for NetLogo's right-aligned agent labels.
+  ;; Map units are abstract: there are no roads, elevation, or blocked routes.
+  with-local-randomness [
+    random-seed map-seed-setting
+    let cells shuffle (range 16)
+    foreach sort turtles [node ->
+      let cell item [who] of node cells
+      ask node [
+        setxy (-9.5 + 7.5 * (cell mod 4) + random-float 1.2 - 0.6)
+              (-11.25 + 7.5 * floor (cell / 4) + random-float 1.2 - 0.6)
+      ]
+    ]
+  ]
+  paint-regions
+end
+
+to paint-regions
+  ;; Muted land regions are a schematic backdrop, not transport barriers.
+  with-local-randomness [
+    random-seed (map-seed-setting + 20000)
+    let centers sort (n-of 5 patches)
+    let colors (list (rgb 17 32 34) (rgb 21 37 36) (rgb 29 43 37)
+      (rgb 31 40 34) (rgb 18 32 42))
+    (foreach centers colors [[center region-color] ->
+      ask center [ set pcolor region-color ]
+    ])
+    let regions patch-set centers
+    ask patches [ set pcolor [pcolor] of min-one-of regions [distance myself] ]
+  ]
+end
+
+to establish-contracts
+  ask manufacturers [
+    let ranked-suppliers sort-by [[a b] -> cheaper-supplier? a b] (sort suppliers)
+    foreach (sublist ranked-suppliers 0 partner-count-setting) [source ->
+      create-contract-to source [
+        set color (rgb 85 112 139)
+        set thickness 0.08
+        set route-distance link-length
+        set transport-rate route-distance * transport-cost-per-distance
+        set landed-unit-cost [unit-price] of end2 + transport-rate
+      ]
+    ]
+  ]
+end
+
+to-report landed-cost-from [source]
+  ;; Manufacturer context: cost per delivered unit, excluding fixed link fees.
+  report [unit-price] of source + distance source * transport-cost-per-distance
+end
+
+to-report cheaper-supplier? [source-a source-b]
+  let cost-a landed-cost-from source-a
+  let cost-b landed-cost-from source-b
+  if cost-a = cost-b [ report [who] of source-a < [who] of source-b ]
+  report cost-a < cost-b
+end
+
 to reset-network-totals
+  set initial-inventory-total sum [initial-inventory] of manufacturers
   set period-demand 0
-  set period-delivered 0
+  set period-received 0
+  set period-fulfilled 0
   set period-unmet 0
   set cumulative-demand 0
-  set cumulative-delivered 0
+  set cumulative-received 0
+  set cumulative-fulfilled 0
   set cumulative-unmet 0
   set period-purchase-cost 0
   set period-transport-cost 0
   set period-relationship-cost 0
+  set period-holding-cost 0
   set period-total-cost 0
   set cumulative-purchase-cost 0
   set cumulative-transport-cost 0
   set cumulative-relationship-cost 0
+  set cumulative-holding-cost 0
   set cumulative-total-cost 0
 end
 
@@ -260,38 +354,75 @@ to go
   read-interface-settings
   validate-settings
   if settings-snapshot != active-settings [
-    error "A slider changed. Run Setup before Step or Run."
+    error "A slider changed. Click Replay to keep this map, or Setup for a new map."
   ]
 
+  recover-suppliers
+  update-supplier-prices
   place-orders
-  update-supplier-availability
+  apply-new-outages
+  allocate-supply
   deliver-orders
+  record-supplier-results
   update-manufacturer-results
   update-supplier-display
   update-network-totals
   tick
 end
 
-to place-orders
-  ;; Fixed relationships and equal splits remain in this stage.
-  ask manufacturers [ set order-quantity demand ]
-  ask contracts [
-    set units-ordered [order-quantity] of end1 / [count my-out-contracts] of end1
+to recover-suppliers
+  ;; A scheduled outage is first discovered after orders on its starting cycle.
+  ;; Subsequent affected cycles are known in advance; expired outages recover now.
+  let current-cycle ticks + 1
+  ask suppliers [
+    if current-cycle > random-outage-through [ set random-outage-through 0 ]
+    set random-outage? (current-cycle <= random-outage-through)
+    set scheduled-outage? (scheduled-outage? and scheduled-outage-due? current-cycle)
+    refresh-supplier-availability
   ]
 end
 
-to update-supplier-availability
-  ;; A new random failure starts after orders, and its duration includes today.
+to update-supplier-prices
+  ;; capacity-utilization still holds the previous completed cycle's result.
+  ;; Price is recomputed from base price, never compounded from yesterday's price.
+  ask suppliers with [not outage-active?] [
+    set pricing-utilization capacity-utilization
+    set unit-price base-price * (1 + price-response * pricing-utilization)
+  ]
+  ask contracts [ set landed-unit-cost [unit-price] of end2 + transport-rate ]
+end
+
+to place-orders
+  ask contracts [
+    set units-ordered 0
+    set order-share 0
+    set thickness 0.06
+  ]
+  ask manufacturers [
+    set inventory-at-start inventory
+    set order-quantity max (list 0 (demand + inventory-target - inventory))
+    set unplaced-order order-quantity
+    let eligible my-out-contracts with [
+      not [outage-active?] of end2 and [available-capacity] of end2 > 0
+    ]
+    if order-quantity > 0 and any? eligible [
+      ;; Positive cost weights retain diversification: cheaper partners get more.
+      let total-weight sum [1 / landed-unit-cost] of eligible
+      ask eligible [
+        set order-share (1 / landed-unit-cost) / total-weight
+        set units-ordered [order-quantity] of end1 * order-share
+        set thickness 0.06 + 0.14 * order-share
+      ]
+      set unplaced-order 0
+    ]
+  ]
+end
+
+to apply-new-outages
+  ;; Today's submitted orders cannot anticipate today's new supplier failures.
   let current-cycle ticks + 1
   ask suppliers [
-    set orders-received sum [units-ordered] of my-in-contracts
-    set scheduled-outage? (
-      who + 1 = outage-supplier-setting and
-      current-cycle >= outage-start-setting and
-      current-cycle < outage-start-setting + outage-duration-setting
-    )
-    if current-cycle > random-outage-through [ set random-outage-through 0 ]
-    set random-outage? (current-cycle <= random-outage-through)
+    set scheduled-outage? scheduled-outage-due? current-cycle
     if outage-risk-setting > 0 and not scheduled-outage? and not random-outage? [
       let shock random-shock current-cycle who
       if first shock < outage-risk-setting / 100 [
@@ -299,8 +430,24 @@ to update-supplier-availability
         set random-outage? true
       ]
     ]
-    set outage-active? (scheduled-outage? or random-outage?)
-    set available-capacity ifelse-value outage-active? [0] [capacity]
+    refresh-supplier-availability
+  ]
+end
+
+to-report scheduled-outage-due? [cycle-number]
+  report (who + 1 = outage-supplier-setting and
+    cycle-number >= outage-start-setting and
+    cycle-number < outage-start-setting + outage-duration-setting)
+end
+
+to refresh-supplier-availability
+  set outage-active? (scheduled-outage? or random-outage?)
+  set available-capacity ifelse-value outage-active? [0] [capacity]
+end
+
+to allocate-supply
+  ask suppliers [
+    set orders-received sum [units-ordered] of my-in-contracts
     ifelse outage-active?
       [ set fill-ratio 0 ]
       [
@@ -338,25 +485,39 @@ to deliver-orders
   ]
 end
 
+to record-supplier-results
+  ask suppliers [
+    set amount-shipped sum [units-delivered] of my-in-contracts
+    ;; Actual production / normal capacity; zero production during an outage.
+    set capacity-utilization ifelse-value (capacity > 0)
+      [min (list 1 (amount-shipped / capacity))]
+      [0]
+  ]
+end
+
 to update-manufacturer-results
   ask manufacturers [
     set amount-received sum [units-delivered] of my-out-contracts
-    set unmet-demand max (list 0 (demand - amount-received))
+    let available inventory-at-start + amount-received
+    set production-met min (list demand available)
+    set unmet-demand demand - production-met
+    set inventory available - production-met
     set buyer-purchase-cost sum [purchase-charge] of my-out-contracts
     set buyer-transport-cost sum [transport-charge] of my-out-contracts
     set buyer-relationship-cost relationship-fee * count my-out-contracts
-    set buyer-total-cost buyer-purchase-cost + buyer-transport-cost + buyer-relationship-cost
+    set buyer-holding-cost inventory * holding-fee-per-unit
+    set buyer-total-cost buyer-purchase-cost + buyer-transport-cost +
+      buyer-relationship-cost + buyer-holding-cost
     set buyer-cumulative-cost buyer-cumulative-cost + buyer-total-cost
     ifelse unmet-demand > 0
       [ set color (rgb 250 166 79) ]
       [ set color (rgb 100 160 245) ]
-    set label (word "M" (who - 2) "  " (precision amount-received 1) "/" demand)
+    set label (word "M" manufacturer-id "  " (precision production-met 1) "/" demand)
   ]
 end
 
 to update-supplier-display
   ask suppliers [
-    set amount-shipped sum [units-delivered] of my-in-contracts
     ifelse outage-active?
       [ set color (rgb 235 78 100) ]
       [
@@ -372,29 +533,48 @@ end
 
 to update-network-totals
   set period-demand sum [demand] of manufacturers
-  set period-delivered sum [amount-received] of manufacturers
+  set period-received sum [amount-received] of manufacturers
+  set period-fulfilled sum [production-met] of manufacturers
   set period-unmet sum [unmet-demand] of manufacturers
   set cumulative-demand cumulative-demand + period-demand
-  set cumulative-delivered cumulative-delivered + period-delivered
+  set cumulative-received cumulative-received + period-received
+  set cumulative-fulfilled cumulative-fulfilled + period-fulfilled
   set cumulative-unmet cumulative-unmet + period-unmet
   set period-purchase-cost sum [buyer-purchase-cost] of manufacturers
   set period-transport-cost sum [buyer-transport-cost] of manufacturers
   set period-relationship-cost sum [buyer-relationship-cost] of manufacturers
-  set period-total-cost period-purchase-cost + period-transport-cost + period-relationship-cost
+  set period-holding-cost sum [buyer-holding-cost] of manufacturers
+  set period-total-cost period-purchase-cost + period-transport-cost +
+    period-relationship-cost + period-holding-cost
   set cumulative-purchase-cost cumulative-purchase-cost + period-purchase-cost
   set cumulative-transport-cost cumulative-transport-cost + period-transport-cost
   set cumulative-relationship-cost cumulative-relationship-cost + period-relationship-cost
+  set cumulative-holding-cost cumulative-holding-cost + period-holding-cost
   set cumulative-total-cost cumulative-total-cost + period-total-cost
 end
 
 to-report period-fulfillment-text
   if period-demand = 0 [ report "N/A" ]
-  report (word (precision (100 * period-delivered / period-demand) 1) "%")
+  report (word (precision (100 * period-fulfilled / period-demand) 1) "%")
 end
 
 to-report cumulative-fulfillment-text
   if cumulative-demand = 0 [ report "N/A" ]
-  report (word (precision (100 * cumulative-delivered / cumulative-demand) 1) "%")
+  report (word (precision (100 * cumulative-fulfilled / cumulative-demand) 1) "%")
+end
+
+to-report average-price
+  if not any? suppliers [ report 0 ]
+  report mean [unit-price] of suppliers
+end
+
+to-report average-utilization
+  if not any? suppliers [ report 0 ]
+  report 100 * mean [capacity-utilization] of suppliers
+end
+
+to-report total-inventory
+  report sum [inventory] of manufacturers
 end
 
 to-report outage-status-text
@@ -405,118 +585,207 @@ to-report outage-status-text
 end]]></code>
   <widgets>
     <view x="260" wrappingAllowedX="false" y="78" frameRate="20.0" minPycor="-16" height="500" showTickCounter="true" patchSize="15.0" fontSize="11" wrappingAllowedY="false" width="500" tickCounterLabel="Cycle" maxPycor="16" updateMode="1" maxPxcor="16" minPxcor="-16"></view>
-    <note x="20" y="12" backgroundDark="0" fontSize="18" width="1060" markdown="false" height="50" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Critical Mineral Procurement | Stage 6</note>
-    <note x="20" y="72" backgroundDark="0" fontSize="11" width="220" markdown="false" height="38" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Scheduled and random supplier outages</note>
+    <note x="20" y="12" backgroundDark="0" fontSize="18" width="1060" markdown="false" height="50" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Critical Mineral Procurement | Stage 9</note>
+    <note x="20" y="72" backgroundDark="0" fontSize="11" width="220" markdown="false" height="38" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">5 suppliers · 10 manufacturers
+Prices respond to capacity use</note>
     <note x="20" y="128" backgroundDark="0" fontSize="13" width="220" markdown="false" height="32" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Controls</note>
-    <button x="20" y="168" height="46" disableUntilTicks="false" forever="false" kind="Observer" width="220" display="Setup">setup</button>
+    <button x="20" y="168" height="46" disableUntilTicks="false" forever="false" kind="Observer" width="105" display="Setup">setup</button>
+    <button x="135" y="168" height="46" disableUntilTicks="false" forever="false" kind="Observer" width="105" display="Replay">replay-setup</button>
     <button x="20" y="224" height="46" disableUntilTicks="true" forever="false" kind="Observer" width="105" display="Step">go</button>
     <button x="135" y="224" height="46" disableUntilTicks="true" forever="true" kind="Observer" width="105" display="Run">go</button>
     <note x="20" y="278" backgroundDark="0" fontSize="10" width="220" markdown="false" height="22" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Suppliers per manufacturer</note>
     <slider x="20" step="1.0" y="302" max="3.0" width="220" display="supplier-count" height="55" min="1.0" direction="Horizontal" default="1.0" variable="supplier-count" units="suppliers"></slider>
-    <slider x="20" step="10.0" y="360" max="100.0" width="220" display="supplier-capacity" height="55" min="0.0" direction="Horizontal" default="50.0" variable="supplier-capacity" units="units"></slider>
+    <slider x="20" step="10.0" y="360" max="100.0" width="220" display="supplier-capacity" height="55" min="0.0" direction="Horizontal" default="100.0" variable="supplier-capacity" units="units"></slider>
     <slider x="20" step="10.0" y="418" max="100.0" width="220" display="min-demand" height="55" min="0.0" direction="Horizontal" default="30.0" variable="min-demand" units="units"></slider>
     <slider x="20" step="10.0" y="476" max="100.0" width="220" display="max-demand" height="55" min="0.0" direction="Horizontal" default="50.0" variable="max-demand" units="units"></slider>
-    <note x="20" y="590" backgroundDark="0" fontSize="10" width="220" markdown="false" height="22" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Transport cost scenario</note>
-    <slider x="20" step="1.0" y="614" max="9999.0" width="220" display="route-seed" height="55" min="1.0" direction="Horizontal" default="2026.0" variable="route-seed"></slider>
-    <note x="20" y="684" backgroundDark="0" fontSize="10" width="220" markdown="false" height="34" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">After changing a slider, click Setup.</note>
+    <note x="20" y="542" backgroundDark="0" fontSize="10" width="220" markdown="false" height="40" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Capacity: 80–120% of slider.
+Base prices: 80–120; markup: 0–20%.</note>
+    <note x="20" y="590" backgroundDark="0" fontSize="10" width="220" markdown="false" height="22" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Map seed · transport = distance × 3</note>
+    <slider x="20" step="1.0" y="614" max="9999.0" width="220" display="map-seed" height="55" min="1.0" direction="Horizontal" default="2026.0" variable="map-seed"></slider>
+    <note x="20" y="684" backgroundDark="0" fontSize="10" width="220" markdown="false" height="34" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Setup: new map. Replay: keep map.
+Use Replay to compare strategies.</note>
+    <monitor x="20" precision="2" y="740" height="55" fontSize="12" width="220" display="Inventory on hand">total-inventory</monitor>
+    <monitor x="20" precision="2" y="806" height="55" fontSize="11" width="105" display="Avg price">average-price</monitor>
+    <monitor x="135" precision="1" y="806" height="55" fontSize="11" width="105" display="Avg use %">average-utilization</monitor>
+    <note x="20" y="868" backgroundDark="0" fontSize="10" width="220" markdown="false" height="60" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Initial stock: 40–80; target: 1 cycle.
+Holding: 1 per unit of ending stock.
+Prices use last cycle's utilization.</note>
     <note x="780" y="83" backgroundDark="0" fontSize="14" width="300" markdown="false" height="31" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Network totals</note>
     <monitor x="780" precision="0" y="122" height="62" fontSize="12" width="143" display="Period demand">period-demand</monitor>
-    <monitor x="937" precision="0" y="122" height="62" fontSize="12" width="143" display="Period delivered">period-delivered</monitor>
-    <monitor x="780" precision="0" y="194" height="62" fontSize="12" width="143" display="Period unmet">period-unmet</monitor>
-    <monitor x="937" precision="0" y="194" height="62" fontSize="12" width="143" display="Period fill rate">period-fulfillment-text</monitor>
-    <monitor x="780" precision="0" y="266" height="62" fontSize="12" width="143" display="Total unmet">cumulative-unmet</monitor>
-    <monitor x="937" precision="0" y="266" height="62" fontSize="12" width="143" display="Overall fill rate">cumulative-fulfillment-text</monitor>
-    <plot x="780" autoPlotX="true" yMax="100.0" autoPlotY="true" yAxis="Units" y="346" xMin="0.0" height="231" legend="true" xMax="20.0" yMin="0.0" width="300" xAxis="Cycle" display="Demand and deliveries per cycle">
+    <monitor x="937" precision="2" y="122" height="62" fontSize="12" width="143" display="Period received">period-received</monitor>
+    <monitor x="780" precision="2" y="194" height="62" fontSize="12" width="143" display="Period unmet">period-unmet</monitor>
+    <monitor x="937" precision="0" y="194" height="62" fontSize="12" width="143" display="Demand met %">period-fulfillment-text</monitor>
+    <monitor x="780" precision="2" y="266" height="62" fontSize="12" width="143" display="Total unmet">cumulative-unmet</monitor>
+    <monitor x="937" precision="0" y="266" height="62" fontSize="12" width="143" display="Overall met %">cumulative-fulfillment-text</monitor>
+    <plot x="780" autoPlotX="true" yMax="100.0" autoPlotY="true" yAxis="Units" y="346" xMin="0.0" height="231" legend="true" xMax="20.0" yMin="0.0" width="300" xAxis="Cycle" display="Demand met each cycle">
       <setup></setup>
       <update></update>
       <pen interval="1.0" mode="0" display="Demand" color="-16736752" legend="true"><setup></setup><update>plot period-demand</update></pen>
-      <pen interval="1.0" mode="0" display="Delivered" color="-12015457" legend="true"><setup></setup><update>plot period-delivered</update></pen>
+      <pen interval="1.0" mode="0" display="Met" color="-12015457" legend="true"><setup></setup><update>plot period-fulfilled</update></pen>
     </plot>
     <note x="260" y="590" backgroundDark="0" fontSize="13" width="500" markdown="false" height="26" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Controlled supplier outage</note>
-    <note x="260" y="619" backgroundDark="0" fontSize="10" width="500" markdown="false" height="22" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">0 = none; 1 = S1; 2 = S2; 3 = S3. Cycle 1 is the first Step after Setup.</note>
-    <slider x="260" step="1.0" y="648" max="3.0" width="240" display="outage-supplier" height="55" min="0.0" direction="Horizontal" default="0.0" variable="outage-supplier"></slider>
+    <note x="260" y="619" backgroundDark="0" fontSize="10" width="500" markdown="false" height="22" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">0 = none; 1–5 = S1–S5. New outages start after orders; ongoing ones are known.</note>
+    <slider x="260" step="1.0" y="648" max="5.0" width="240" display="outage-supplier" height="55" min="0.0" direction="Horizontal" default="0.0" variable="outage-supplier"></slider>
     <slider x="520" step="1.0" y="648" max="500.0" width="240" display="outage-start" height="55" min="1.0" direction="Horizontal" default="3.0" variable="outage-start" units="cycle"></slider>
     <slider x="260" step="1.0" y="712" max="20.0" width="240" display="outage-duration" height="55" min="1.0" direction="Horizontal" default="2.0" variable="outage-duration" units="cycles"></slider>
     <monitor x="520" precision="0" y="712" height="55" fontSize="12" width="240" display="Out this cycle">outage-status-text</monitor>
-    <note x="780" y="592" backgroundDark="0" fontSize="13" width="300" markdown="false" height="29" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Procurement costs</note>
-    <monitor x="780" precision="2" y="628" height="62" fontSize="11" width="94" display="Purchase">period-purchase-cost</monitor>
-    <monitor x="883" precision="2" y="628" height="62" fontSize="11" width="94" display="Transport">period-transport-cost</monitor>
-    <monitor x="986" precision="2" y="628" height="62" fontSize="11" width="94" display="Link fees">period-relationship-cost</monitor>
-    <monitor x="780" precision="2" y="700" height="62" fontSize="12" width="143" display="Period total">period-total-cost</monitor>
-    <monitor x="937" precision="2" y="700" height="62" fontSize="12" width="143" display="Cumulative total">cumulative-total-cost</monitor>
+    <note x="780" y="592" backgroundDark="0" fontSize="13" width="300" markdown="false" height="29" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Period costs</note>
+    <monitor x="780" precision="2" y="624" height="48" fontSize="11" width="143" display="Purchase">period-purchase-cost</monitor>
+    <monitor x="937" precision="2" y="624" height="48" fontSize="11" width="143" display="Transport">period-transport-cost</monitor>
+    <monitor x="780" precision="2" y="677" height="48" fontSize="11" width="143" display="Link fees">period-relationship-cost</monitor>
+    <monitor x="937" precision="2" y="677" height="48" fontSize="11" width="143" display="Holding">period-holding-cost</monitor>
+    <monitor x="780" precision="2" y="730" height="48" fontSize="11" width="143" display="Period total">period-total-cost</monitor>
+    <monitor x="937" precision="2" y="730" height="48" fontSize="11" width="143" display="Cumulative total">cumulative-total-cost</monitor>
     <note x="260" y="783" backgroundDark="0" fontSize="13" width="820" markdown="false" height="26" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Random supplier outages</note>
     <note x="260" y="811" backgroundDark="0" fontSize="10" width="820" markdown="false" height="22" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Each available supplier can fail after orders. 0% turns random outages off.</note>
     <slider x="260" step="1.0" y="840" max="100.0" width="190" display="outage-risk" height="55" min="0.0" direction="Horizontal" default="2.0" variable="outage-risk" units="%"></slider>
     <slider x="470" step="1.0" y="840" max="20.0" width="190" display="duration-min" height="55" min="1.0" direction="Horizontal" default="1.0" variable="duration-min" units="cycles"></slider>
     <slider x="680" step="1.0" y="840" max="20.0" width="190" display="duration-max" height="55" min="1.0" direction="Horizontal" default="10.0" variable="duration-max" units="cycles"></slider>
     <slider x="890" step="1.0" y="840" max="9999.0" width="190" display="scenario-seed" height="55" min="1.0" direction="Horizontal" default="2026.0" variable="scenario-seed"></slider>
-    <note x="260" y="901" backgroundDark="0" fontSize="10" width="820" markdown="false" height="27" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Same scenario seed repeats demands and random outages. Change sliders, then click Setup.</note>
+    <note x="260" y="901" backgroundDark="0" fontSize="10" width="820" markdown="false" height="27" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Scenario seed fixes base prices, capacities, demands, stock, and outage draws. Replay also keeps the map.</note>
   </widgets>
   <info><![CDATA[## Purpose
 
-Stage 6 adds independent random supplier outages and automatic recovery alongside the optional scheduled outage. The network still has three suppliers and three manufacturers. Each manufacturer splits its order equally among one, two, or three fixed suppliers. Purchase, transport, and relationship costs remain in the model. Inventory, supplier switching, and changing prices come later.
+Stage 9 adds price feedback and cost-weighted ordering to the 5-supplier, 10-manufacturer model. Suppliers quote prices using the previous cycle's actual capacity utilization. Manufacturers order only through existing partners known to be available, giving lower-cost partners larger shares. New failures still occur after orders. Geography, base prices, normal capacities, production demands, and contracts remain fixed during a run; current quotes, order shares, availability, inventory, and outcomes change.
 
-## Network and controls
+## Setup, Replay, and controls
 
-The supplier-count slider sets the number of suppliers used by *each* manufacturer. Setup selects the first one, two, or three suppliers in these fixed preference lists:
+**Setup** creates a fresh map and updates map-seed. **Replay** rebuilds the selected map with the current controls. With unchanged controls, Replay reproduces the run. To compare supplier-count strategies under matched external conditions, use Replay instead of Setup. Step advances one cycle; Run repeats cycles until stopped. Prices and order quantities follow the current strategy, so their later paths can differ between matched runs.
 
-| Manufacturer | First | Second | Third |
-| --- | --- | --- | --- |
-| M1 | S1 | S2 | S3 |
-| M2 | S2 | S3 | S1 |
-| M3 | S1 | S3 | S2 |
+- supplier-count: each manufacturer's number of established partners, 1–3, out of five suppliers.
+- supplier-capacity: the central capacity level; each supplier draws 80–120% of it. The default 100 gives capacities 80–120 units per cycle. Zero gives no productive capacity.
+- min-demand / max-demand: the inclusive integer range for each manufacturer's fixed production demand per cycle.
+- map-seed: node locations and decorative land regions. Replay applies it; Setup selects a new seed.
+- outage-supplier / outage-start / outage-duration: one controlled complete outage. Select 0 for none, or 1–5 for S1–S5. Start is the first affected cycle; duration includes that cycle.
+- outage-risk: each otherwise normal supplier's independent per-cycle probability of a new failure, in percent; 0 disables random failures.
+- duration-min / duration-max: inclusive integer duration range for random failures.
+- scenario-seed: fixed base prices, capacities, demands, initial stock, and supplier-and-cycle potential outage draws, independently of the map.
 
-The supplier-capacity slider sets each supplier's capacity. The min-demand and max-demand sliders give all manufacturers the same inclusive demand range; Setup draws one integer demand per manufacturer. Demand, capacity, and relationships stay fixed during a run. The scenario-seed slider fixes these demand draws and the random outage events. The same scenario seed and demand range give identical manufacturer demands across repeated Setups and all three sourcing strategies; change the seed for a new scenario.
+Changing any slider requires Setup or Replay. Invalid demand or duration bounds are rejected before replacing the current run. Cycle 1 is the first Step after initialization. There are no additional Stage 9 sliders: price response is fixed at 0.20 and the freight coefficient remains 3.
 
-Positions are fixed for readability and have no effect on transportation cost. Each potential manufacturer–supplier pair instead has a unit transportation rate. Setup draws all nine rates from 0.5–1.5 cost units per delivered mineral unit, rounded to two decimal places. The route-seed slider (1–9999) selects a reproducible rate table. The same seed produces the same rates for all three sourcing strategies, including pairs without an active link. Changing the seed and clicking Setup generates a different scenario. The rate table stays fixed during a run.
+## Network and initial supplier choice
 
-## Controlled outage
+The current network has 5 suppliers and 10 manufacturers, as requested. To retain the proposal's approximate aggregate supply-to-demand ratio at this smaller scale, its capacities of 400–600 were divided by five to 80–120 at the default control. Expected normal capacity is 500 versus expected production demand 400; concentrated orders can still cause local shortages.
 
-Set outage-supplier to 0 for no outage, or to 1, 2, or 3 to interrupt S1, S2, or S3. Outage-start is the first affected cycle; outage-duration is the number of affected cycles. Cycle 1 is the first Step after Setup. For example, start = 3 and duration = 2 interrupt cycles 3 and 4, and the supplier recovers in cycle 5.
+Setup draws each supplier's immutable base-price from the integers 80–120 and sets unit-price equal to base-price. Every manufacturer ranks all five suppliers by base price plus unit freight, then establishes contracts with the cheapest requested number. Equal landed costs use supplier ID as a deterministic tie break. Fixed relationship fees are identical across suppliers and do not change that ranking for a given partner count. Initial selection does not anticipate future congestion or failures.
 
-The supplier receives its usual orders before the outage takes effect in every affected cycle. Its available capacity and deliveries are then zero throughout the selected interval. Normal capacity returns when the interval ends unless a random outage is still active. There is only one scheduled outage per run.
+Contracts do not change during the run. A manufacturer with one partner cannot reroute to an unconnected supplier; one with two or three can shift orders within its established set. There is no automatic replacement of partners.
 
-## Random outages
+## Price feedback
 
-Outage-risk is the independent chance, in percent, that each currently available supplier fails in a cycle. The default is 2%; set it to 0% to turn random outages off. After orders have been submitted, a new failure reduces that supplier's deliverable capacity to zero in the current cycle. Its duration is drawn uniformly from the inclusive duration-min to duration-max range; the defaults are 1 and 10 cycles. A failure starting in cycle 3 with duration 2 affects cycles 3 and 4; the supplier becomes eligible to operate normally again in cycle 5. On that first eligible cycle it can also draw a new failure, so a high risk can produce consecutive outages.
+At the end of cycle t, each supplier records:
 
-Suppliers already in either a scheduled or random outage do not draw a new failure. A random outage already in progress continues counting down during a scheduled outage. If the two intervals overlap, the supplier is unavailable until both have ended. Each supplier-and-cycle draw uses scenario-seed, independently of sourcing strategy and route-seed. With the same controls, Setup reproduces the same demands and outage sequence. Multiple suppliers can be out in one cycle.
+`capacity utilization(t) = actual shipments(t) / normal capacity`
 
-Established relationships and equal order shares do not change; manufacturers do not redirect orders to other suppliers in this stage.
+This lies between 0 and 1 because shipments are capacity-limited. It is zero if normal capacity is zero, during a complete outage, or when nothing is shipped. Utilization means actual production, not incoming orders divided by capacity.
 
-## Each cycle
+After recovery checks at the beginning of cycle t+1, each available supplier quotes:
 
-1. Each manufacturer splits its full demand equally among its contract links.
-2. After orders are submitted, scheduled and random outages make affected suppliers' available capacity zero. Other suppliers retain normal capacity. Each supplier applies one fill ratio to its incoming links.
-3. A link's purchase charge is its delivered units × the supplier's unit price. Its transport charge is delivered units × that pair's transport rate. Both charges are zero when nothing is delivered.
-4. Each manufacturer also pays 50 cost units per active supplier relationship every cycle, even if that supplier delivers nothing. Its total cost is purchase + transport + relationship cost.
-5. The model updates current-cycle and cumulative cost and demand totals. One tick is one procurement cycle.
+`unit price(t+1) = base price × (1 + 0.20 × capacity utilization(t))`
 
-Every supplier's unit purchase price is 100 cost units in this stage. Supplier-specific prices and price feedback are later stages. Unmet demand is reported separately; it is not assigned a monetary penalty.
+Quotes are recalculated from the immutable base price and are bounded between base price and 1.20 × base price. They do not compound. The first cycle uses base prices because there is no prior production. A supplier already known to be interrupted retains its last quote while unavailable; it cannot receive an order. On recovery its preceding outage cycle had zero production, so its first new quote returns to base price. A new failure after ordering does not change the quote that was used for that cycle's order.
+
+For example, base price 100, capacity 100, and shipments 50 in cycle 1 produce a quote of 110 in cycle 2. If cycle 2 ships 80, cycle 3 quotes 116. Today's orders and shipments affect the next cycle's quote only.
+
+Inspect base-price, unit-price, capacity-utilization, and pricing-utilization to trace the rule. After a Step, capacity-utilization is the just-completed cycle's actual use, while pricing-utilization is the historical value used for the displayed quote. For an ongoing outage the retained quote and pricing-utilization may come from an earlier cycle.
+
+## Order shares and known availability
+
+Each manufacturer calculates its replenishment requirement:
+
+`order quantity = max(0, demand + inventory target - opening inventory)`
+
+Only established partners with positive capacity that are known to be available at the start of the cycle are eligible. Each eligible link uses its current supplier quote and fixed distance-based freight:
+
+`landed unit cost = current unit price + transport rate`
+
+`weight = 1 / landed unit cost`
+
+`order share = weight / sum of weights over eligible partners`
+
+`units ordered = replenishment requirement × order share`
+
+This parameter-free baseline gives lower-cost partners more units, equal-cost partners equal shares, and every eligible partner a positive share when there is an order. A quote increase reduces that partner's share when competitors' quotes and availability are unchanged. It is a simple diversification rule, not an optimal procurement policy or a forecast of rationing.
+
+For example, landed unit costs 100 and 200 imply shares 2/3 and 1/3. An order of 60 sends 40 and 20 units. If the first partner is already known to be interrupted, the other receives all 60. If that first partner instead fails unexpectedly after ordering, its submitted 40 remain undelivered that cycle; only later cycles can redirect that share. Price changes update both the allocation calculation and the actual charges.
+
+If every established partner is unavailable or has zero capacity, no order is submitted. The manufacturer records the desired replenishment as unplaced-order, uses remaining inventory for production, and recalculates its requirement next cycle. An unplaced order is not a backlog or an immediate production shortfall. If no replenishment is needed, all shares and submitted quantities are zero. At every cycle, desired order = submitted link orders + unplaced-order.
+
+## Map and transport costs
+
+Nodes occupy 15 randomly assigned cells of a 4×4 grid, with a small random displacement in each cell to retain label spacing. Positions stay fixed during a run and the world does not wrap. Muted map regions are decorative: there are no roads, elevation, water barriers, or travel delays.
+
+`route distance = sqrt((supplier x - buyer x)^2 + (supplier y - buyer y)^2)`
+
+`transport rate per delivered mineral unit = route distance × 3`
+
+`transport charge = actual delivered units × transport rate`
+
+For distance 8, current purchase quote 90, and delivery 20, freight is 24 per unit and landed cost is 114. Purchase costs 1,800 and transport costs 480. Distance and freight stay fixed when the supplier changes its purchase quote. These are abstract map/cost units, not calibrated kilometres or tariffs. Inspect a contract for route-distance, transport-rate, landed-unit-cost, order-share, units-ordered, units-delivered, and the charge breakdown.
+
+## Balancing price and distance
+
+Base purchase prices retain the 80–120 range. The comparisons below describe initial supplier selection before dynamic markups. The freight coefficient is raised from the initial Stage 8 value of 1 to 3, so a supplier's purchase-price advantage must compensate for the extra distance it requires. A price discount of 15 offsets 5 additional map units; the largest possible discount of 40 offsets about 13.33 additional map units. There is no added control or preference weight: the selection score is the same landed unit cost that is actually paid on delivery.
+
+For example, a distant supplier charging 90 at distance 15 costs 135 per delivered unit; a nearer supplier charging 105 at distance 5 costs 120, so the nearer supplier wins. Price still matters: a supplier charging 80 at distance 8 costs 104, which beats a supplier charging 110 at distance 5 (125). Both proximity and a sufficiently large price advantage can determine the choice.
+
+A sensitivity check used 100 maps (map-seeds 1–100) and 30 supplier-price scenarios (scenario-seeds 2026–2055), for 3,000 combinations with supplier-count = 1. Geometry and prices were drawn by the model, and every manufacturer's five landed costs were compared for each coefficient. These are initial selection checks, not 3,000 complete simulation runs.
+
+| Freight coefficient | All 10 choose one supplier | Mean largest customer group | Mean suppliers selected |
+| ---: | ---: | ---: | ---: |
+| 1 | 470 / 3,000 | 7.09 | 2.24 |
+| 2 | 79 / 3,000 | 5.80 | 2.99 |
+| 3 (current) | 9 / 3,000 | 5.12 | 3.50 |
+| 4 | 0 / 3,000 | 4.71 | 3.80 |
+
+At coefficient 3, 62.7% of manufacturers chose their nearest supplier; the remaining 37.3% chose a more distant supplier with a better total quote. This provides a transparent spatial trade-off while retaining price-driven choices. The coefficient is an illustrative modelling assumption, not an estimate of real mineral freight rates or an optimized value. Some concentration and unused suppliers remain possible; no rule forces an even customer distribution. The larger selected freight charges are included in all cost totals, and the same coefficient applies to every sourcing strategy.
+
+To reproduce the previously concentrated example, set map-seed = 2267, scenario-seed = 2026, supplier-count = 1 and click Replay. With the revised rate, S1–S5 have 2, 2, 5, 0, and 1 manufacturers respectively. The previous coefficient of 1 gave all 10 to S3. Locations, purchase prices, and capacities are identical in this comparison.
+
+## Inventory and cost accounting
+
+Each manufacturer starts with 40–80 units of stock and targets one cycle of its own demand. After supplier deliveries:
+
+`production met = min(demand, opening inventory + receipts)`
+
+`ending inventory = opening inventory + receipts - production met`
+
+`unmet demand = demand - production met`
+
+Stock carries forward. Past unmet production and unplaced orders do not become backlogs; there is no spoilage. Receipts can exceed production demand while stock is replenished, or fall below it while stored inventory sustains production.
+
+Purchase cost uses actual delivered units times the supplier's quote for that same cycle. Freight uses actual delivered units times the fixed route rate. Every established relationship costs 50 per cycle, including temporarily unavailable or unused ones. Ending inventory costs 1 per unit per cycle. Initial stock is an initial condition, not another purchase at Setup. Total cost is purchase + transport + relationship + holding cost. Unmet production is reported separately without a monetary penalty.
+
+## Outages and cycle order
+
+1. Recover any expired outage. Ongoing outages remain known to manufacturers. Update available suppliers' quotes from the previous completed cycle's utilization, then refresh contract landed costs.
+2. Calculate replenishment requirements and allocate orders among known-available established partners using inverse landed-cost weights.
+3. Apply newly starting scheduled and random failures after orders. A scheduled start of 3 with duration 2 first interrupts after orders in cycle 3; in cycle 4 it is known before ordering; it recovers before orders in cycle 5, unless another outage remains active.
+4. A normal supplier independently fails with outage-risk probability. The drawn duration includes the current cycle. Existing outages do not draw new failures. On recovery a supplier can receive orders and then fail again that cycle. Overlapping scheduled/random intervals keep it unavailable until both end.
+5. Each supplier sums submitted orders. Interrupted suppliers ship zero; other suppliers fill every order by the same fraction min(1, capacity / total orders). A normal supplier with zero orders uses fill fraction 1.
+6. Record supplier shipments and utilization for the next cycle. Manufacturers add receipts, serve production demand, retain inventory, and record costs. Update totals, display, and cycle count.
+
+The controlled outage is intentionally unannounced to manufacturers on its starting cycle, even though the experimenter sets its schedule. Both controlled and random failures therefore retain the previous stages' after-orders onset. No orders are reassigned retrospectively after that surprise.
+
+Outage draws depend only on scenario-seed, supplier ID, and cycle. Changing partner count, quotes, or order shares does not change the external failure path. Several suppliers can fail at once.
 
 ## Reading the display
 
-Click Setup to build the network, Step for one cycle, or Run for continuous cycles. Changing any slider requires another Setup. Setup stops with an error if min-demand exceeds max-demand or duration-min exceeds duration-max.
+Boxes are suppliers and houses are manufacturers. Teal suppliers operate normally; orange suppliers have orders above capacity; red suppliers marked OUT are interrupted. Blue manufacturers meet production demand; orange ones have unmet demand. Orange links have partial delivery, red links lead to interrupted suppliers, and thicker links carry larger planned order shares. Links with no order stay thin.
 
-Green boxes are available suppliers; a red supplier marked OUT is interrupted by either mechanism. Blue houses are manufacturers; orange houses have unmet demand. An orange link was only partly delivered because of capacity, while a red link leads to an interrupted supplier. Supplier labels show `orders received → amount shipped`; manufacturer labels show `amount received / demand`. Out this cycle lists every interrupted supplier after each Step and shows None when all are available.
+Supplier labels show orders received → shipments; manufacturer labels show production met / demand. Inspect a supplier for base/current prices and utilization, or a contract for the current landed cost and order share.
 
-The upper right monitors show period demand, deliveries, unmet demand, and fill rates. The lower right monitors show current-cycle purchase, transport, and relationship charges, their period total, and the cumulative total across completed cycles. Fill rate is delivered / demand × 100%; it shows N/A when demand is zero.
+Avg price is the simple mean of all five currently displayed supplier quotes, including frozen quotes of interrupted suppliers. Avg use % is mean actual capacity utilization in the just-completed cycle; after Setup it is zero. These two monitors do not add controls.
 
-## Hand-check example
+Period received is delivery into inventory, while Demand met % is production served divided by demand. Overall met % uses cumulative production and demand. Zero demand shows N/A. Inventory on hand is remaining stock. The plot compares production demand and demand met; cost monitors separate the four cost categories and their period/cumulative totals.
 
-Set supplier-capacity to 50, min-demand and max-demand to 30, and route-seed to 2026. The route rates, with manufacturers as rows and suppliers as columns, are:
+## Reproducibility and checks
 
-| Route | S1 | S2 | S3 |
-| --- | ---: | ---: | ---: |
-| M1 | 0.72 | 0.91 | 1.48 |
-| M2 | 0.59 | 0.98 | 1.49 |
-| M3 | 0.70 | 1.41 | 1.06 |
+Change supplier-count and click Replay with the same map-seed and scenario-seed to preserve geography, base prices, capacities, demands, initial stocks, and potential outages. Current prices and allocations are endogenous outcomes and may differ across strategies. With all controls unchanged, Replay repeats the same scenario and behavior.
 
-With supplier-count = 1, S1 ships 50 and S2 ships 30, for 80 delivered and 10 unmet. Purchase cost is 8,000, transport cost is 64.90, and three relationship fees total 150, so period total cost is 8,214.90. With supplier-count = 2, all 90 units are delivered; purchase, transport, and relationship costs are 9,000, 87.90, and 300, for a period total of 9,387.90. With supplier-count = 3, all 90 units are delivered and the three costs are 9,000, 93.40, and 450, for a period total of 9,543.40.
+Quantity checks: initial stock + cumulative receipts = cumulative production met + current stock; desired order = submitted orders + unplaced-order; each supplier's shipments are at most its available capacity. Accounting checks: each delivered unit is charged the current quote plus its route freight; holding cost equals ending stock; total cost equals the four components.
 
-For a scheduled outage check, first set outage-risk = 0, then keep supplier-count = 1 and set outage-supplier = 1, outage-start = 3, and outage-duration = 2. S1 still receives 60 units of orders in cycles 3 and 4 but ships zero. Network deliveries fall to 30, unmet demand rises to 60, and period total cost is 3,179.40, including 150 in relationship fees. In cycle 5, S1 recovers and the normal 80 deliveries and 8,214.90 period cost return.
-
-For a random outage check, set outage-supplier = 0, outage-risk = 100, and duration-min = duration-max = 1. Every supplier fails after orders in every cycle; deliveries, purchase charges, and transport charges are zero, while relationship fees remain payable.]]></info>
+Set outage-risk = 100, duration-min = duration-max = 1, and outage-supplier = 0 to test a failure every cycle. Recovery happens before orders and failure recurs after them: all deliveries and purchase/freight charges are zero, stock eventually runs out, and relationship fees continue. With longer outages, intervening known-out cycles have zero submitted orders and positive unplaced-order where replenishment is needed.]]></info>
   <turtleShapes>
     <shape name="default" rotatable="true" editableColorIndex="0">
       <polygon color="-1920102913" filled="true" marked="true">
