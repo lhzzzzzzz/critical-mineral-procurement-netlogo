@@ -2,6 +2,8 @@
 
 A NetLogo 7.0.4 model comparing one-, two-, and three-supplier procurement under capacity constraints and temporary supply interruptions. The default network has **5 suppliers and 10 manufacturers**; both populations are configurable.
 
+**Experiment reports:** [English](experiment-results-en.html) · [中文](experiment-results.html)
+
 ## Run and read the interface
 
 Open `model.nlogox` and use the controls above the network:
@@ -53,9 +55,32 @@ Each scenario, rather than each cycle, is an experimental replicate. Compare str
 
 These are finite-horizon experiments, including initialization; no warm-up is discarded. They measure outcomes under the stated initial-stock policy, not an established stationary distribution.
 
-## Executed checks and initial findings
+## Six-family experimental report
 
-Both saved experiments were executed with the NetLogo 7.0.4 background engine (540 completed runs of 500 cycles). With failure risk 2% and freight 3, arithmetic means across the 30 scenarios were:
+Read the completed offline study in **[English](experiment-results-en.html)** or **[中文](experiment-results.html)**. Both editions contain the same nine figures, paired intervals, fee calculator, all 51 parameter conditions, raw results and reproduction bundle.
+
+Download the HTML file and open it in a browser to use the interactive controls; GitHub's file viewer displays the source. Language links at the top switch between the two files when they are in the same folder.
+
+The report was run against checkpoint `003aefa` with the model unchanged; the observation layer and experiment runner are included in the downloadable ZIP rather than added to the interactive model.
+
+| Family | Tested factors (in addition to 1/2/3 partners) | Scenario runs before cross-family de-duplication |
+|---|---|---:|
+| Failure risk | 0/2/5% | 270 |
+| Capacity | 60/80/100, at risk 0/2% | 540 |
+| Inventory target | 0/1/2 times demand, at risk 0/2% | 540 |
+| Freight | Coefficient 2/3/4, risk 2% | 270 |
+| Price feedback | Alpha 0/0.20/0.40, at risk 0/2% | 540 |
+| Accounting fees | Relationship fee 0/50/100 and holding fee 0/1/2, across inventory targets 0/1/2 | 2,430 revaluations of 270 existing trajectories; no new runs |
+
+The union of the first five grids contains **1,530 distinct core runs**, each with a 500-cycle outcome. The 90 baseline runs continue to 1,000 cycles for a horizon check. Nine additional controlled-outage demonstrations run for 200 cycles. This is **811,800 actual simulated cycles**, excluding validation reruns. Overlapping baselines and accounting revaluations are never counted as additional independent replicates.
+
+All conditions retain 30 paired scenarios (scenario seeds 2026–2055 and map seeds 1–30), fixed populations 5×10, and identical initial-stock draws. The report presents finite-horizon estimates, separates shortage caused by aggregate scarcity from idle capacity under fixed networks, and explicitly distinguishes inventory buffering from the effect of a larger replenishment order. At risk 2%, current price feedback increases mean service by only 0.161/0.126 percentage points for 2/3 partners while adding roughly 16–17 in operating expenditure per unit met; the single-partner physical trajectory is unchanged. Fees affect bookkeeping only. No revenue, lost-production penalty, or terminal-stock credit is inferred.
+
+The extended baseline preserves the service/cost ordering between windows 101–500 and 501–1000; this is a sensitivity check, not proof of stationarity. Every simulation cycle passed stock/cost/capacity/price checks. Independent calculations reproduced the paired intervals; six additional original-versus-instrumented comparisons and six actual fee-change reruns validated observation neutrality and repricing. The offline report was checked at desktop, tablet and phone widths, including all 27 fee-control combinations and data downloads.
+
+## Baseline findings
+
+The six-family study reproduced the original saved-experiment baseline using the NetLogo 7.0.4 background engine. With failure risk 2% and freight 3, arithmetic means across the 30 scenarios were:
 
 | Partners per manufacturer | Demand met | Operating spend | Spend / unit met |
 |---:|---:|---:|---:|
@@ -94,4 +119,4 @@ Verification also compared all three strategies over 500 cycles against the arch
 
 The model supports a focused, conditional comparison of **fixed sourcing portfolios**. It already contains non-trivial interactions: shared capacity, inventory buffering, supplier interruptions, lagged price feedback, and adaptive order shares. More mechanisms are not required merely to make the model larger.
 
-Priority follow-ups are to justify the chosen rules against literature; test capacity, relationship fees, inventory policy/initialization, and simulation horizon; and switch off price feedback in an ablation to explain its contribution. Independent outages omit common regional shocks, and fixed portfolios omit supplier replacement. Both assumptions can affect the apparent benefit of diversification. The final ODD description should document the chosen populations (5×10 for the baseline experiments), adaptive map area, and distance-based costs, rather than copy the earlier proposal's 50-manufacturer parameters.
+The completed report tests capacity, fees, inventory targets, simulation horizon, and price-feedback ablation. Remaining priorities are to justify the chosen rules against literature, isolate replenishment policy from stock buffering, and test correlated regional interruptions. Initial-stock policy was held fixed rather than varied, and extended-horizon checks cover the baseline only. Independent outages omit common regional shocks, and fixed portfolios omit supplier replacement. Both assumptions can affect the apparent benefit of diversification. The final ODD description should document the chosen populations (5×10 for the baseline experiments), adaptive map area, and distance-based costs, rather than copy the earlier proposal's 50-manufacturer parameters.
