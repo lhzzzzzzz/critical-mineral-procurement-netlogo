@@ -5,98 +5,96 @@
 ;; Known outages are checked before orders; new failures occur after orders.
 ;; Setup draws a new map; Replay rebuilds the selected map and economic scenario.
 
-breed [suppliers supplier]
-breed [manufacturers manufacturer]
-directed-link-breed [contracts contract]
+breed [suppliers supplier] ; 定义供应商这一类实体：suppliers 是集合名，supplier 是单数名；此处还没有创建实体
+breed [manufacturers manufacturer] ; 定义制造商这一类实体：manufacturers 是集合名，manufacturer 是单数名
+directed-link-breed [contracts contract] ; 定义有向合同连线；本模型创建的方向是制造商 → 供应商，表示向谁下单
 
-globals [
-  capacity-setting
-  demand-min-setting
-  demand-max-setting
-  partner-count-setting
-  map-seed-setting
-  outage-supplier-setting
-  outage-start-setting
-  outage-duration-setting
-  outage-risk-setting
-  duration-min-setting
-  duration-max-setting
-  scenario-seed-setting
-  supplier-total-setting
-  manufacturer-total-setting
-  map-columns
-  settings-ready?
-  active-settings
-  transport-cost-per-distance
-  price-response
-  relationship-fee
-  holding-fee-per-unit
-  initial-inventory-total
-  period-demand
-  period-received
-  period-fulfilled
-  period-unmet
-  cumulative-demand
-  cumulative-received
-  cumulative-fulfilled
-  cumulative-unmet
-  period-purchase-cost
-  period-transport-cost
-  period-relationship-cost
-  period-holding-cost
-  period-total-cost
-  cumulative-purchase-cost
-  cumulative-transport-cost
-  cumulative-relationship-cost
-  cumulative-holding-cost
-  cumulative-total-cost
+globals [ ; 全网共用的变量；不是每个供应商或制造商各存一份
+  capacity-setting ; 界面的供应商产能基准；每家实际产能为它的 80%–120%
+  demand-min-setting ; 初始化抽取制造商需求时的下限，包含这个数
+  demand-max-setting ; 初始化抽取制造商需求时的上限，包含这个数
+  partner-count-setting ; 每家制造商固定合作几家供应商，即实验里的 k
+  map-seed-setting ; 地图随机种子；控制实体位置和背景
+  outage-supplier-setting ; 指定断供的供应商编号；1 表示 S1，0 表示关闭
+  outage-start-setting ; 指定断供从第几个 cycle 开始
+  outage-duration-setting ; 指定断供持续几个 cycle，包含开始的那一期
+  outage-risk-setting ; 正常供应商每期新发生随机故障的概率；2 表示 2%
+  duration-min-setting ; 随机故障持续期的最小值
+  duration-max-setting ; 随机故障持续期的最大值
+  scenario-seed-setting ; 情景随机种子；控制价格、产能、需求、初始库存及潜在故障
+  supplier-total-setting ; 全网供应商总数，不是每家制造商的伙伴数
+  manufacturer-total-setting ; 全网制造商总数
+  map-columns ; 摆放实体的网格有几列，用于计算地图大小和位置
+  settings-ready? ; 内部默认参数是否已准备好；不表示模拟已经开始
+  active-settings ; 本次初始化时的界面设置快照；用于阻止运行途中直接改参数
+  transport-cost-per-distance ; 每单位货物、每单位距离的运费，默认 3
+  inventory-target-multiplier ; 库存目标是每期需求的几倍，默认 1；不是仓库容量
+  price-response ; 上期利用率对本期报价的影响系数，默认 0.20
+  relationship-fee ; 每条合同每期的维护费，默认 50；不下单也要付
+  holding-fee-per-unit ; 每单位期末库存每期的持有费，默认 1
+  initial-inventory-total ; 全网初始库存总量，保存下来用于库存守恒检查
+  period-demand ; 全网本期生产需求总量
+  period-received ; 全网本期实际收货总量，不等于本期产出
+  period-fulfilled ; 全网本期实际满足的生产需求总量
+  period-unmet ; 全网本期没满足的生产需求；不转为下期积压
+  cumulative-demand ; 从初始化到现在的累计生产需求
+  cumulative-received ; 从初始化到现在的累计实际收货量
+  cumulative-fulfilled ; 从初始化到现在的累计生产满足量，用于计算满足率
+  cumulative-unmet ; 从初始化到现在的累计生产缺口，只统计历史损失
+  period-purchase-cost ; 全网本期采购费，按实际交付量计费
+  period-transport-cost ; 全网本期运输费，按实际交付量计费
+  period-relationship-cost ; 全网本期合同维护费
+  period-holding-cost ; 全网本期期末库存持有费
+  period-total-cost ; 全网本期总开支，即上面四项费用之和
+  cumulative-purchase-cost ; 历史累计采购费，供实验分项分析
+  cumulative-transport-cost ; 历史累计运输费，供实验分项分析
+  cumulative-relationship-cost ; 历史累计合同维护费，供费用实验核对
+  cumulative-holding-cost ; 历史累计库存持有费，可用于计算平均实际库存
+  cumulative-total-cost ; 历史累计总开支，用于界面及单位开支指标
 ]
 
-suppliers-own [
-  capacity
-  orders-received
-  amount-shipped
-  fill-ratio
-  base-price
-  unit-price
-  capacity-utilization
-  pricing-utilization
-  scheduled-outage?
-  random-outage?
-  random-outage-through
-  outage-active?
-  available-capacity
+suppliers-own [ ; 每一家供应商各自保存一份这些变量
+  capacity ; 这家供应商正常时每期最多供多少货；初始化后固定
+  orders-received ; 本期所有客户向它提交的订单总量
+  amount-shipped ; 本期实际发出的货物总量，受可用产能限制
+  fill-ratio ; 统一交付比例；例如 0.6 表示每张订单都交付 60%
+  base-price ; 初始化抽到的基础单价，80–120；之后不变
+  unit-price ; 当前采购报价，不含运输费；由基础价和历史利用率算出
+  capacity-utilization ; 最近完成一期的实际发货量 / 正常产能，供下一期报价使用
+  pricing-utilization ; 当前报价实际采用的历史利用率，方便与刚更新的利用率区分
+  scheduled-outage? ; 当前是否处于指定断供；断供首期在下单后才揭示
+  random-outage? ; 当前是否处于随机故障期
+  random-outage-through ; 随机故障持续到第几期；这一期也不能供货，0 表示没有
+  outage-active? ; 当前是否停供；指定断供或随机故障任一存在就为 true
+  available-capacity ; 本期实际可用产能；停供时为 0，正常时等于 capacity
 ]
 
-contracts-own [
-  route-distance
-  landed-unit-cost
-  order-share
-  units-ordered
-  units-delivered
-  transport-rate
-  purchase-charge
-  transport-charge
+contracts-own [ ; 每一条制造商 → 供应商的合同各自保存一份
+  route-distance ; 这条合同两端的地图距离，初始化后固定
+  landed-unit-cost ; 当前到货单价，即供应商报价 + 每单位运输费
+  order-share ; 这条合同分得该制造商补货量的比例，范围 0–1
+  units-ordered ; 通过这条合同实际提交的本期订单量
+  units-delivered ; 这条合同本期实际交付量，即订单量 × 供应商交付比例
+  transport-rate ; 这条路线每单位货物的运费，即距离 × 运费系数
+  purchase-charge ; 这条合同本期采购费，即实际交付量 × 当前报价
+  transport-charge ; 这条合同本期运输费，即实际交付量 × 每单位运费
 ]
 
-manufacturers-own [
-  manufacturer-id
-  demand
-  initial-inventory
-  inventory
-  inventory-at-start
-  inventory-target
-  order-quantity
-  unplaced-order
-  amount-received
-  production-met
-  unmet-demand
-  buyer-purchase-cost
-  buyer-transport-cost
-  buyer-relationship-cost
-  buyer-holding-cost
-  buyer-total-cost
-  buyer-cumulative-cost
+manufacturers-own [ ; 每一家制造商各自保存一份这些变量
+  manufacturer-id ; 界面显示的编号；1 表示 M1，与 NetLogo 内置 who 编号不同
+  demand ; 这家制造商每期需要多少货用于生产；初始化抽取后固定
+  initial-inventory ; 开始时抽到的库存量，40–80；保留记录，不是库存上限
+  inventory ; 当前真正拥有的库存；一期结束后结余会带入下一期
+  inventory-at-start ; 本期下单前的库存快照，供本期生产结算使用
+  inventory-target ; 希望在期末留下多少库存，默认等于一期需求；不保证能补足
+  order-quantity ; 本期希望补货多少，即 max(0, 需求 + 目标库存 − 当前库存)
+  amount-received ; 本期从所有合同实际收到的货物总量
+  production-met ; 本期用期初库存和到货实际满足了多少生产需求
+  unmet-demand ; 本期未满足的生产需求，不会自动累积成下期订单
+  buyer-purchase-cost ; 这家制造商本期所有合同的采购费之和
+  buyer-transport-cost ; 这家制造商本期所有合同的运输费之和
+  buyer-relationship-cost ; 这家制造商本期维护费，即合同数 × 每条合同维护费
+  buyer-holding-cost ; 这家制造商本期库存费，即期末实际库存 × 每单位持有费
 ]
 
 to startup
@@ -151,7 +149,7 @@ to-report settings-snapshot
     supplier-total-setting manufacturer-total-setting)
 end
 
-to restore-settings [values]
+to restore-settings [values] ; values：清空前保存的 14 项界面参数，按固定顺序排列
   set capacity-setting item 0 values
   set demand-min-setting item 1 values
   set demand-max-setting item 2 values
@@ -177,7 +175,7 @@ to validate-settings
     ["supplier-capacity" "min-demand" "max-demand" "supplier-count" "map-seed"
       "outage-supplier" "outage-start" "outage-duration" "outage-risk"
       "duration-min" "duration-max" "scenario-seed" "total-suppliers" "total-manufacturers"]
-    [[value lower upper field-name] ->
+    [[value lower upper field-name] -> ; 当前输入值、允许下限、允许上限、报错时显示的参数名
       if not is-number? value [ error (word field-name " must be a number.") ]
       if value != floor value or value < lower or value > upper [
         error (word field-name " must be an integer from " lower " to " upper ".")
@@ -202,8 +200,8 @@ to setup
   ensure-settings
   read-interface-settings
   validate-settings
-  let previous-seed map-seed-setting
-  let next-seed 1 + random 9999
+  let previous-seed map-seed-setting ; 原来的地图种子，用来避免新地图抽到相同种子
+  let next-seed 1 + random 9999 ; 准备给新地图使用的种子
   while [next-seed = previous-seed] [ set next-seed 1 + random 9999 ]
   run (word "set map-seed " next-seed)
   replay-setup
@@ -213,14 +211,14 @@ to replay-setup
   initialize-scenario 3
 end
 
-to initialize-scenario [freight-rate]
+to initialize-scenario [freight-rate] ; freight-rate：这次模拟采用的每单位货物、每单位距离运费
   ;; BehaviorSpace varies freight here without adding another interface control.
   if freight-rate <= 0 [ error "Freight rate must be positive." ]
   ensure-settings
   read-interface-settings
   validate-settings
   ;; Interface controls survive clear-all; retain their internal snapshot too.
-  let selected-settings settings-snapshot
+  let selected-settings settings-snapshot ; 临时保存本次设置，clear-all 后用它恢复
   clear-all
   configure-map (item 12 selected-settings + item 13 selected-settings)
   restore-settings selected-settings
@@ -231,6 +229,7 @@ to initialize-scenario [freight-rate]
   ;; Ranking and actual freight charges use the same rate.
   set transport-cost-per-distance freight-rate
   set price-response 0.20
+  set inventory-target-multiplier 1
   create-network
   reset-network-totals
   reset-ticks
@@ -262,7 +261,7 @@ to initialize-suppliers
       set color (rgb 46 196 168)
       set label-color white
     ]
-    foreach sort suppliers [source ->
+    foreach sort suppliers [source -> ; source：按编号顺序逐一处理的当前供应商
       ask source [
         set base-price 80 + random 41
         set unit-price base-price
@@ -288,11 +287,11 @@ to initialize-manufacturers
       set color (rgb 100 160 245)
       set label-color white
     ]
-    foreach sort manufacturers [buyer ->
+    foreach sort manufacturers [buyer -> ; buyer：按编号顺序逐一处理的当前制造商
       ask buyer [
         set demand demand-min-setting +
           random (demand-max-setting - demand-min-setting + 1)
-        set inventory-target demand
+        set inventory-target demand * inventory-target-multiplier
         set initial-inventory 40 + random 41
         set inventory initial-inventory
         set inventory-at-start inventory
@@ -301,13 +300,13 @@ to initialize-manufacturers
   ]
 end
 
-to configure-map [node-count]
+to configure-map [node-count] ; node-count：供应商和制造商加起来的总数，用来决定地图大小
   ;; Keep the 500 px interface view stable while enlarging the underlying world.
   ;; The minimum 4 x 4 layout exactly preserves the original 5 + 10 scenario.
-  let columns max (list 4 ceiling (sqrt node-count))
-  let half-extent ceiling ((columns * 7.5 + 2) / 2)
-  let new-width 2 * half-extent + 1
-  let new-patch-size 495 / new-width
+  let columns max (list 4 ceiling (sqrt node-count)) ; 排列实体需要的网格列数，至少 4 列
+  let half-extent ceiling ((columns * 7.5 + 2) / 2) ; 地图从中心到边界的坐标范围
+  let new-width 2 * half-extent + 1 ; 新地图每边包含多少个 patch 小格
+  let new-patch-size 495 / new-width ; 每个小格显示多少像素，使画面总宽度保持稳定
   ;; Shrink pixels before growing the world; shrink the world before growing pixels.
   if new-width > world-width [ set-patch-size new-patch-size ]
   resize-world (- half-extent) half-extent (- half-extent) half-extent
@@ -320,10 +319,10 @@ to generate-map
   ;; Cell spacing is constant in model units, so larger populations occupy more land.
   with-local-randomness [
     random-seed map-seed-setting
-    let cells shuffle (range (map-columns * map-columns))
-    let first-row (-3.75 * (map-columns - 1))
-    foreach sort turtles [node ->
-      let cell item [who] of node cells
+    let cells shuffle (range (map-columns * map-columns)) ; 打乱后的摆放位置编号列表
+    let first-row (-3.75 * (map-columns - 1)) ; 排列实体时的起始坐标，让布局居中
+    foreach sort turtles [node -> ; node：当前要摆放的一个供应商或制造商
+      let cell item [who] of node cells ; 分配给当前实体的位置编号
       ask node [
         setxy (first-row + 1.75 + 7.5 * (cell mod map-columns) + random-float 1.2 - 0.6)
               (first-row + 7.5 * floor (cell / map-columns) + random-float 1.2 - 0.6)
@@ -337,21 +336,21 @@ to paint-regions
   ;; Muted land regions are a schematic backdrop, not transport barriers.
   with-local-randomness [
     random-seed (map-seed-setting + 20000)
-    let centers sort (n-of 5 patches)
-    let colors (list (rgb 17 32 34) (rgb 21 37 36) (rgb 29 43 37)
+    let centers sort (n-of 5 patches) ; 五块背景色区域的中心，只影响显示
+    let colors (list (rgb 17 32 34) (rgb 21 37 36) (rgb 29 43 37) ; 五个区域各自的背景颜色
       (rgb 31 40 34) (rgb 18 32 42))
-    (foreach centers colors [[center region-color] ->
+    (foreach centers colors [[center region-color] -> ; 当前区域中心及它对应的背景颜色
       ask center [ set pcolor region-color ]
     ])
-    let regions patch-set centers
+    let regions patch-set centers ; 把区域中心列表转成集合，便于寻找最近的中心
     ask patches [ set pcolor [pcolor] of min-one-of regions [distance myself] ]
   ]
 end
 
 to establish-contracts
   ask manufacturers [
-    let ranked-suppliers sort-by [[a b] -> cheaper-supplier? a b] (sort suppliers)
-    foreach (sublist ranked-suppliers 0 partner-count-setting) [source ->
+    let ranked-suppliers sort-by [[a b] -> cheaper-supplier? a b] (sort suppliers) ; 按到货单价排序的供应商列表；a、b 是正在比较的两家
+    foreach (sublist ranked-suppliers 0 partner-count-setting) [source -> ; source：选中的一家供应商，接下来与它建立合同
       create-contract-to source [
         set color (rgb 85 112 139)
         set thickness 0.08
@@ -363,14 +362,14 @@ to establish-contracts
   ]
 end
 
-to-report landed-cost-from [source]
+to-report landed-cost-from [source] ; source：要查询到货单价的那家供应商
   ;; Manufacturer context: cost per delivered unit, excluding fixed link fees.
   report [unit-price] of source + distance source * transport-cost-per-distance
 end
 
-to-report cheaper-supplier? [source-a source-b]
-  let cost-a landed-cost-from source-a
-  let cost-b landed-cost-from source-b
+to-report cheaper-supplier? [source-a source-b] ; source-a、source-b：要比较价格的两家供应商
+  let cost-a landed-cost-from source-a ; 从第一家买一单位货的报价加运费
+  let cost-b landed-cost-from source-b ; 从第二家买一单位货的报价加运费
   if cost-a = cost-b [ report [who] of source-a < [who] of source-b ]
   report cost-a < cost-b
 end
@@ -424,7 +423,7 @@ end
 to recover-suppliers
   ;; A scheduled outage is first discovered after orders on its starting cycle.
   ;; Subsequent affected cycles are known in advance; expired outages recover now.
-  let current-cycle ticks + 1
+  let current-cycle ticks + 1 ; 当前将要执行第几期；ticks 记录的是已完成期数
   ask suppliers [
     if current-cycle > random-outage-through [ set random-outage-through 0 ]
     set random-outage? (current-cycle <= random-outage-through)
@@ -452,30 +451,28 @@ to place-orders
   ask manufacturers [
     set inventory-at-start inventory
     set order-quantity max (list 0 (demand + inventory-target - inventory))
-    set unplaced-order order-quantity
-    let eligible my-out-contracts with [
+    let eligible my-out-contracts with [ ; 当前已知可以下单的既有合同集合
       not [outage-active?] of end2 and [available-capacity] of end2 > 0
     ]
     if order-quantity > 0 and any? eligible [
       ;; Positive cost weights retain diversification: cheaper partners get more.
-      let total-weight sum [1 / landed-unit-cost] of eligible
+      let total-weight sum [1 / landed-unit-cost] of eligible ; 所有可用合同的倒数价格权重之和，用来算分单比例
       ask eligible [
         set order-share (1 / landed-unit-cost) / total-weight
         set units-ordered [order-quantity] of end1 * order-share
         set thickness 0.06 + 0.14 * order-share
       ]
-      set unplaced-order 0
     ]
   ]
 end
 
 to apply-new-outages
   ;; Today's submitted orders cannot anticipate today's new supplier failures.
-  let current-cycle ticks + 1
+  let current-cycle ticks + 1 ; 当前将要执行第几期，用来判断本期新发生的断供
   ask suppliers [
     set scheduled-outage? scheduled-outage-due? current-cycle
     if outage-risk-setting > 0 and not scheduled-outage? and not random-outage? [
-      let shock random-shock current-cycle who
+      let shock random-shock current-cycle who ; 两个数：判断是否故障的随机数，以及发生后持续几期
       if first shock < outage-risk-setting / 100 [
         set random-outage-through current-cycle + last shock - 1
         set random-outage? true
@@ -485,7 +482,7 @@ to apply-new-outages
   ]
 end
 
-to-report scheduled-outage-due? [cycle-number]
+to-report scheduled-outage-due? [cycle-number] ; cycle-number：要检查是否在指定断供期内的期数
   report (who + 1 = outage-supplier-setting and
     cycle-number >= outage-start-setting and
     cycle-number < outage-start-setting + outage-duration-setting)
@@ -509,10 +506,10 @@ to allocate-supply
   ]
 end
 
-to-report random-shock [cycle-number supplier-id]
+to-report random-shock [cycle-number supplier-id] ; 期数和供应商的 who 编号，共同决定这次故障抽样
   ;; A dedicated draw per supplier and cycle makes shocks strategy-independent.
-  let chance 1
-  let duration duration-min-setting
+  let chance 1 ; 随后抽取 0 到 1 之间的随机数，小于故障概率才发生故障
+  let duration duration-min-setting ; 随后抽取的故障持续期数，仅在发生故障时生效
   with-local-randomness [
     random-seed ((scenario-seed-setting + 10007 * cycle-number + 1000003 * supplier-id) mod 2147483647)
     set chance random-float 1
@@ -549,7 +546,7 @@ end
 to update-manufacturer-results
   ask manufacturers [
     set amount-received sum [units-delivered] of my-out-contracts
-    let available inventory-at-start + amount-received
+    let available inventory-at-start + amount-received ; 本期可拿来生产的货物总量：期初库存加实际到货
     set production-met min (list demand available)
     set unmet-demand demand - production-met
     set inventory available - production-met
@@ -557,9 +554,6 @@ to update-manufacturer-results
     set buyer-transport-cost sum [transport-charge] of my-out-contracts
     set buyer-relationship-cost relationship-fee * count my-out-contracts
     set buyer-holding-cost inventory * holding-fee-per-unit
-    set buyer-total-cost buyer-purchase-cost + buyer-transport-cost +
-      buyer-relationship-cost + buyer-holding-cost
-    set buyer-cumulative-cost buyer-cumulative-cost + buyer-total-cost
     ifelse unmet-demand > 0
       [ set color (rgb 250 166 79) ]
       [ set color (rgb 100 160 245) ]
@@ -581,16 +575,16 @@ end
 to update-node-labels
   ;; Display-only shuffling must not consume the simulation's random stream.
   with-local-randomness [
-    let compact? count turtles > 16
+    let compact? count turtles > 16 ; 实体超过 16 个时缩短标签，避免画面太拥挤
     ask suppliers [
-      let name (word "S" (who + 1))
+      let name (word "S" (who + 1)) ; 供应商显示名称，例如 S1
       set label ifelse-value compact? [name] [
         (word name (ifelse-value outage-active? [" OUT"] [""])
           "  " (precision orders-received 1) "→" (precision amount-shipped 1))
       ]
     ]
     ask manufacturers [
-      let name (word "M" manufacturer-id)
+      let name (word "M" manufacturer-id) ; 制造商显示名称，例如 M1
       set label ifelse-value compact? [name] [
         (word name "  " (precision production-met 1) "/" demand)
       ]
@@ -643,7 +637,7 @@ to-report operating-cost-per-unit-met
 end
 
 to-report unit-cost-text
-  let value operating-cost-per-unit-met
+  let value operating-cost-per-unit-met ; 要显示的单位开支；尚无产出时为 false
   if value = false [ report "N/A" ]
   report precision value 2
 end
@@ -667,11 +661,11 @@ to-report total-inventory
 end
 
 to-report outage-status-text
-  let disrupted sort (suppliers with [outage-active?])
+  let disrupted sort (suppliers with [outage-active?]) ; 当前所有停供的供应商，按编号排列
   if empty? disrupted [ report "None" ]
   if length disrupted > 5 [ report (word length disrupted " out of " count suppliers " (red nodes)") ]
-  let names map [s -> (word "S" ([who] of s + 1))] disrupted
-  report reduce [[a b] -> (word a ", " b)] names
+  let names map [s -> (word "S" ([who] of s + 1))] disrupted ; 停供供应商的显示名称列表；s 是其中一家
+  report reduce [[a b] -> (word a ", " b)] names ; a 是已拼好的文字，b 是下一个名称，用逗号连起来
 end]]></code>
   <widgets>
     <note x="20" y="12" width="730" height="34" fontSize="20" markdown="false" backgroundDark="0" backgroundLight="0" textColorDark="-1" textColorLight="-16777216">Critical Mineral Procurement</note>
@@ -796,7 +790,7 @@ This parameter-free baseline gives lower-cost partners more units, equal-cost pa
 
 For example, landed unit costs 100 and 200 imply shares 2/3 and 1/3. An order of 60 sends 40 and 20 units. If the first partner is already known to be interrupted, the other receives all 60. If that first partner instead fails unexpectedly after ordering, its submitted 40 remain undelivered that cycle; only later cycles can redirect that share. Price changes update both the allocation calculation and the actual charges.
 
-If every established partner is unavailable or has zero capacity, no order is submitted. The manufacturer records the desired replenishment as unplaced-order, uses remaining inventory for production, and recalculates its requirement next cycle. An unplaced order is not a backlog or an immediate production shortfall. If no replenishment is needed, all shares and submitted quantities are zero. At every cycle, desired order = submitted link orders + unplaced-order.
+If every established partner is unavailable or has zero capacity, no order is submitted. The manufacturer uses remaining inventory for production and recalculates its requirement next cycle. Unsubmitted replenishment is not a backlog or an immediate production shortfall. It can be calculated when needed as order-quantity minus the sum of units-ordered on my-out-contracts; no separate persistent variable is stored. If no replenishment is needed, all shares and submitted quantities are zero.
 
 ## Map and transport costs
 
@@ -878,22 +872,37 @@ The row below the network shows current production met / demand, receipts, inven
 
 Keep total-suppliers and total-manufacturers fixed, then change supplier-count and click Replay with the same map-seed and scenario-seed to preserve geography, base prices, capacities, demands, initial stocks, and potential outages. Current prices and allocations are endogenous outcomes and may differ across strategies. With all controls unchanged, Replay repeats the same scenario and behavior.
 
-Quantity checks: initial stock + cumulative receipts = cumulative production met + current stock; desired order = submitted orders + unplaced-order; each supplier's shipments are at most its available capacity. Accounting checks: each delivered unit is charged the current quote plus its route freight; holding cost equals ending stock; total cost equals the four components.
+Quantity checks: initial stock + cumulative receipts = cumulative production met + current stock; submitted link orders are either the full desired order or zero when no eligible partner exists; each supplier's shipments are at most its available capacity. Accounting checks: each delivered unit is charged the current quote plus its route freight; holding cost equals holding-fee-per-unit times ending stock; total cost equals the four components. Individual purchase, transport, relationship and holding costs feed the network totals; unused individual total/cumulative cost copies are not stored.
 
-Set outage-risk = 100, duration-min = duration-max = 1, and outage-supplier = 0 to test a failure every cycle. Recovery happens before orders and failure recurs after them: all deliveries and purchase/freight charges are zero, stock eventually runs out, and relationship fees continue. With longer outages, intervening known-out cycles have zero submitted orders and positive unplaced-order where replenishment is needed.
+Set outage-risk = 100, duration-min = duration-max = 1, and outage-supplier = 0 to test a failure every cycle. Recovery happens before orders and failure recurs after them: all deliveries and purchase/freight charges are zero, stock eventually runs out, and relationship fees continue. With longer outages, intervening known-out cycles have zero submitted orders even when replenishment is needed.
 
 ## Matched experiments (BehaviorSpace)
 
-Open Tools > BehaviorSpace. Two saved experiments run 500 cycles per condition:
+Open Tools > BehaviorSpace. Six saved experiments reproduce the six study families, using 30 paired scenarios and 500 cycles per run:
 
-- sourcing-risk-comparison: 1, 2, 3 partners × failure probabilities 0%, 2%, 5% × 30 paired scenarios = 270 runs. Freight coefficient is 3.
-- transport-sensitivity: 1, 2, 3 partners × freight coefficients 2, 3, 4 × 30 paired scenarios = 270 runs. Failure probability is 2%.
+| Study family | Saved experiment | Factors, in addition to 1/2/3 partners | Runs |
+| --- | --- | --- | ---: |
+| E1: Failure risk | sourcing-risk-comparison | Risk 0/2/5%; freight 3 | 270 |
+| E2: Capacity | capacity-sensitivity | Capacity 60/80/100; risk 0/2% | 540 |
+| E3: Inventory target | inventory-target-sensitivity | Target 0/1/2 times demand; risk 0/2% | 540 |
+| E4: Freight | transport-sensitivity | Freight 2/3/4; risk 2% | 270 |
+| E5: Price feedback | price-feedback-sensitivity | Price response 0/0.20/0.40; risk 0/2% | 540 |
+| E6: Accounting fees | accounting-fee-sensitivity-rerun | Relationship fee 0/50/100; holding fee 0/1/2; target 0/1/2; risk 2% | 2,430 |
 
-Both experiments explicitly set total-suppliers 5, total-manufacturers 10, capacity 100, demand 30–50, duration 1–10, and controlled outage off. Their original population and baseline results are retained regardless of the interface count settings. Scenario seeds 2026–2055 pair with map seeds 1–30 in order. Each scenario is one independent network/environment; the 500 cycles within it are not 500 independent replications. The experiment setup fixes the map seed before initialize-scenario, which applies freight before supplier selection. Interactive New map / Replay always use freight 3. Experimental coefficients are read by the same selection and charging rules.
+All experiments fix total-suppliers 5, total-manufacturers 10, demand 30–50, random duration 1–10 and controlled outage off. Unless varied above, capacity is 100, target is one cycle of demand, freight is 3, price response is 0.20, relationship fee is 50 and holding fee is 1. Initial stock is always drawn from 40–80: changing the inventory target does not change initial stock. Scenario seeds 2026–2055 pair with map seeds 1–30. A scenario is the replicate; its cycles are not independent replicates.
 
-Metrics are recorded at the end, including production, receipts, unmet demand, four cost components, total operating spend, spend per unit met, initial stock and terminal stock. Compare paired strategy differences across 30 scenarios, reporting mean differences and uncertainty intervals. Risk 0 isolates capacity congestion without random failures; comparing against it helps distinguish congestion from outage losses. The transport experiment checks whether conclusions rely on the chosen freight balance.
+The added inventory-target-multiplier is an experiment parameter, not an Interface control. New map / Replay reset it to 1. The four added setups save target, price-response and fee factors in local variables before initialize-scenario clears globals, then restore them before the first cycle. Freight is passed into initialize-scenario so it affects initial supplier selection. Target assignment uses with-local-randomness to avoid changing the simulation random stream. The cycle rules are unchanged.
 
-These are finite-horizon runs beginning with the same free initial stocks, with no discarded warm-up. Check longer horizons / initialization sensitivity before interpreting long-run performance. Results are conditional on a small synthetic network, fixed partners, independent outages, instantaneous deliveries, inverse-cost allocation, and illustrative cost parameters. They do not establish an optimal real-world sourcing count. Further priorities are capacity / relationship-fee sensitivity, a price-feedback ablation, and clearer justification against relevant literature.]]></info>
+The original six-family report used a Java driver with the NetLogo 7.0.4 headless engine and an observation layer; it did not save all six definitions in BehaviorSpace. These definitions were added afterward to make the experiment grids accessible from the GUI. They reproduce the final service, stock and expenditure metrics, not all the report's additional congestion observations, 1,000-cycle horizon checks, demonstrations, plots or paired-interval analysis.
+
+For E6 the original report repriced 270 existing risk-2% trajectories under nine fee combinations, rather than simulating 2,430 new physical trajectories. The saved E6 experiment is explicitly a rerun: it runs each fee combination to reproduce the accounting totals. Fees affect bookkeeping only, not decisions. Repeated fee variants are not additional independent samples. E6 takes longer than repricing existing results.
+
+Running all six definitions gives 4,590 runs without cross-experiment de-duplication. The first five total 2,160 entries but only 1,530 distinct parameter/seed combinations. Original E1 and E4 still contain 90 identical baseline entries, giving 450 distinct combinations between those two. Do not pool duplicate baselines or fee revaluations as independent replicates.
+
+Metrics are recorded at the end: service level, production, receipts, unmet demand, four cost components, total operating spend, spend per unit met, initial stock and terminal stock. Use Table output. For a quick configuration check, duplicate an experiment and use a single enumerated seed (e.g. ["scenario-seed" 2026]) with a time limit of 5 or 10; keep the full definitions for formal runs. Compare within-scenario strategy differences across the 30 scenarios rather than treating output rows or cycles as independent observations indiscriminately.
+
+These are finite-horizon runs including free initial stock, with no discarded warm-up. The synthetic network, fixed partners, independent outages, instantaneous delivery and inverse-cost allocation remain modelling assumptions. Fees and price feedback are illustrative parameters; the outputs do not identify a profit-maximizing real-world strategy.
+]]></info>
   <turtleShapes>
     <shape name="default" rotatable="true" editableColorIndex="0">
       <polygon color="-1920102913" filled="true" marked="true">
@@ -1847,6 +1856,369 @@ initialize-scenario transport-cost-per-distance</setup>
         </enumeratedValueSet>
         <enumeratedValueSet variable="duration-max">
           <value value="10"></value>
+        </enumeratedValueSet>
+        <steppedValueSet variable="scenario-seed" first="2026" step="1" last="2055"></steppedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="capacity-sensitivity" repetitions="1" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="500">
+      <setup>;; Preserve experiment factors before initialize-scenario clears globals.
+let selected-target inventory-target-multiplier
+let selected-response price-response
+let selected-link-fee relationship-fee
+let selected-holding-fee holding-fee-per-unit
+set map-seed scenario-seed - 2025
+initialize-scenario transport-cost-per-distance
+set inventory-target-multiplier selected-target
+set price-response selected-response
+set relationship-fee selected-link-fee
+set holding-fee-per-unit selected-holding-fee
+with-local-randomness [
+  ask manufacturers [ set inventory-target demand * inventory-target-multiplier ]
+]</setup>
+      <go>go</go>
+      <metrics>
+        <metric>overall-service-level</metric>
+        <metric>cumulative-unmet</metric>
+        <metric>cumulative-total-cost</metric>
+        <metric>operating-cost-per-unit-met</metric>
+        <metric>cumulative-fulfilled</metric>
+        <metric>cumulative-received</metric>
+        <metric>total-inventory</metric>
+        <metric>initial-inventory-total</metric>
+        <metric>cumulative-purchase-cost</metric>
+        <metric>cumulative-transport-cost</metric>
+        <metric>cumulative-relationship-cost</metric>
+        <metric>cumulative-holding-cost</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="total-suppliers">
+          <value value="5"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="total-manufacturers">
+          <value value="10"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="supplier-count">
+          <value value="1"></value>
+          <value value="2"></value>
+          <value value="3"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="outage-risk">
+          <value value="0"></value>
+          <value value="2"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="transport-cost-per-distance">
+          <value value="3"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="supplier-capacity">
+          <value value="60"></value>
+          <value value="80"></value>
+          <value value="100"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="min-demand">
+          <value value="30"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="max-demand">
+          <value value="50"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="outage-supplier">
+          <value value="0"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="outage-start">
+          <value value="101"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="outage-duration">
+          <value value="2"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="duration-min">
+          <value value="1"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="duration-max">
+          <value value="10"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="inventory-target-multiplier">
+          <value value="1"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="price-response">
+          <value value="0.2"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="relationship-fee">
+          <value value="50"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="holding-fee-per-unit">
+          <value value="1"></value>
+        </enumeratedValueSet>
+        <steppedValueSet variable="scenario-seed" first="2026" step="1" last="2055"></steppedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="inventory-target-sensitivity" repetitions="1" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="500">
+      <setup>;; Preserve experiment factors before initialize-scenario clears globals.
+let selected-target inventory-target-multiplier
+let selected-response price-response
+let selected-link-fee relationship-fee
+let selected-holding-fee holding-fee-per-unit
+set map-seed scenario-seed - 2025
+initialize-scenario transport-cost-per-distance
+set inventory-target-multiplier selected-target
+set price-response selected-response
+set relationship-fee selected-link-fee
+set holding-fee-per-unit selected-holding-fee
+with-local-randomness [
+  ask manufacturers [ set inventory-target demand * inventory-target-multiplier ]
+]</setup>
+      <go>go</go>
+      <metrics>
+        <metric>overall-service-level</metric>
+        <metric>cumulative-unmet</metric>
+        <metric>cumulative-total-cost</metric>
+        <metric>operating-cost-per-unit-met</metric>
+        <metric>cumulative-fulfilled</metric>
+        <metric>cumulative-received</metric>
+        <metric>total-inventory</metric>
+        <metric>initial-inventory-total</metric>
+        <metric>cumulative-purchase-cost</metric>
+        <metric>cumulative-transport-cost</metric>
+        <metric>cumulative-relationship-cost</metric>
+        <metric>cumulative-holding-cost</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="total-suppliers">
+          <value value="5"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="total-manufacturers">
+          <value value="10"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="supplier-count">
+          <value value="1"></value>
+          <value value="2"></value>
+          <value value="3"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="outage-risk">
+          <value value="0"></value>
+          <value value="2"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="transport-cost-per-distance">
+          <value value="3"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="supplier-capacity">
+          <value value="100"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="min-demand">
+          <value value="30"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="max-demand">
+          <value value="50"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="outage-supplier">
+          <value value="0"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="outage-start">
+          <value value="101"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="outage-duration">
+          <value value="2"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="duration-min">
+          <value value="1"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="duration-max">
+          <value value="10"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="inventory-target-multiplier">
+          <value value="0"></value>
+          <value value="1"></value>
+          <value value="2"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="price-response">
+          <value value="0.2"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="relationship-fee">
+          <value value="50"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="holding-fee-per-unit">
+          <value value="1"></value>
+        </enumeratedValueSet>
+        <steppedValueSet variable="scenario-seed" first="2026" step="1" last="2055"></steppedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="price-feedback-sensitivity" repetitions="1" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="500">
+      <setup>;; Preserve experiment factors before initialize-scenario clears globals.
+let selected-target inventory-target-multiplier
+let selected-response price-response
+let selected-link-fee relationship-fee
+let selected-holding-fee holding-fee-per-unit
+set map-seed scenario-seed - 2025
+initialize-scenario transport-cost-per-distance
+set inventory-target-multiplier selected-target
+set price-response selected-response
+set relationship-fee selected-link-fee
+set holding-fee-per-unit selected-holding-fee
+with-local-randomness [
+  ask manufacturers [ set inventory-target demand * inventory-target-multiplier ]
+]</setup>
+      <go>go</go>
+      <metrics>
+        <metric>overall-service-level</metric>
+        <metric>cumulative-unmet</metric>
+        <metric>cumulative-total-cost</metric>
+        <metric>operating-cost-per-unit-met</metric>
+        <metric>cumulative-fulfilled</metric>
+        <metric>cumulative-received</metric>
+        <metric>total-inventory</metric>
+        <metric>initial-inventory-total</metric>
+        <metric>cumulative-purchase-cost</metric>
+        <metric>cumulative-transport-cost</metric>
+        <metric>cumulative-relationship-cost</metric>
+        <metric>cumulative-holding-cost</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="total-suppliers">
+          <value value="5"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="total-manufacturers">
+          <value value="10"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="supplier-count">
+          <value value="1"></value>
+          <value value="2"></value>
+          <value value="3"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="outage-risk">
+          <value value="0"></value>
+          <value value="2"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="transport-cost-per-distance">
+          <value value="3"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="supplier-capacity">
+          <value value="100"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="min-demand">
+          <value value="30"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="max-demand">
+          <value value="50"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="outage-supplier">
+          <value value="0"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="outage-start">
+          <value value="101"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="outage-duration">
+          <value value="2"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="duration-min">
+          <value value="1"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="duration-max">
+          <value value="10"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="inventory-target-multiplier">
+          <value value="1"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="price-response">
+          <value value="0"></value>
+          <value value="0.2"></value>
+          <value value="0.4"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="relationship-fee">
+          <value value="50"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="holding-fee-per-unit">
+          <value value="1"></value>
+        </enumeratedValueSet>
+        <steppedValueSet variable="scenario-seed" first="2026" step="1" last="2055"></steppedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="accounting-fee-sensitivity-rerun" repetitions="1" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="500">
+      <setup>;; Preserve experiment factors before initialize-scenario clears globals.
+let selected-target inventory-target-multiplier
+let selected-response price-response
+let selected-link-fee relationship-fee
+let selected-holding-fee holding-fee-per-unit
+set map-seed scenario-seed - 2025
+initialize-scenario transport-cost-per-distance
+set inventory-target-multiplier selected-target
+set price-response selected-response
+set relationship-fee selected-link-fee
+set holding-fee-per-unit selected-holding-fee
+with-local-randomness [
+  ask manufacturers [ set inventory-target demand * inventory-target-multiplier ]
+]</setup>
+      <go>go</go>
+      <metrics>
+        <metric>overall-service-level</metric>
+        <metric>cumulative-unmet</metric>
+        <metric>cumulative-total-cost</metric>
+        <metric>operating-cost-per-unit-met</metric>
+        <metric>cumulative-fulfilled</metric>
+        <metric>cumulative-received</metric>
+        <metric>total-inventory</metric>
+        <metric>initial-inventory-total</metric>
+        <metric>cumulative-purchase-cost</metric>
+        <metric>cumulative-transport-cost</metric>
+        <metric>cumulative-relationship-cost</metric>
+        <metric>cumulative-holding-cost</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="total-suppliers">
+          <value value="5"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="total-manufacturers">
+          <value value="10"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="supplier-count">
+          <value value="1"></value>
+          <value value="2"></value>
+          <value value="3"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="outage-risk">
+          <value value="2"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="transport-cost-per-distance">
+          <value value="3"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="supplier-capacity">
+          <value value="100"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="min-demand">
+          <value value="30"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="max-demand">
+          <value value="50"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="outage-supplier">
+          <value value="0"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="outage-start">
+          <value value="101"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="outage-duration">
+          <value value="2"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="duration-min">
+          <value value="1"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="duration-max">
+          <value value="10"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="inventory-target-multiplier">
+          <value value="0"></value>
+          <value value="1"></value>
+          <value value="2"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="price-response">
+          <value value="0.2"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="relationship-fee">
+          <value value="0"></value>
+          <value value="50"></value>
+          <value value="100"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="holding-fee-per-unit">
+          <value value="0"></value>
+          <value value="1"></value>
+          <value value="2"></value>
         </enumeratedValueSet>
         <steppedValueSet variable="scenario-seed" first="2026" step="1" last="2055"></steppedValueSet>
       </constants>

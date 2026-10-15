@@ -1,0 +1,97 @@
+{
+  "status": "pass",
+  "families": [
+    {
+      "family": 0,
+      "title": "第 0 组：统一基准下的三种采购策略",
+      "runs": 90,
+      "conditions": 3,
+      "status": "pass",
+      "comparisons": 2190,
+      "failures": 0,
+      "unavailable": 0,
+      "max_absolute_error": 2.123415470123291e-07
+    },
+    {
+      "family": 1,
+      "title": "第 1 组：断供风险",
+      "runs": 270,
+      "conditions": 9,
+      "status": "pass",
+      "comparisons": 6390,
+      "failures": 0,
+      "unavailable": 0,
+      "max_absolute_error": 5.327165126800537e-07
+    },
+    {
+      "family": 2,
+      "title": "第 2 组：供应商产能",
+      "runs": 540,
+      "conditions": 18,
+      "status": "pass",
+      "comparisons": 12600,
+      "failures": 0,
+      "unavailable": 0,
+      "max_absolute_error": 5.327165126800537e-07
+    },
+    {
+      "family": 3,
+      "title": "第 3 组：库存目标",
+      "runs": 540,
+      "conditions": 18,
+      "status": "pass",
+      "comparisons": 13050,
+      "failures": 0,
+      "unavailable": 0,
+      "max_absolute_error": 5.997717380523682e-07
+    },
+    {
+      "family": 4,
+      "title": "第 4 组：运输系数",
+      "runs": 270,
+      "conditions": 9,
+      "status": "pass",
+      "comparisons": 6390,
+      "failures": 0,
+      "unavailable": 0,
+      "max_absolute_error": 2.7194619178771973e-07
+    },
+    {
+      "family": 5,
+      "title": "第 5 组：价格反馈",
+      "runs": 540,
+      "conditions": 18,
+      "status": "pass",
+      "comparisons": 12960,
+      "failures": 0,
+      "unavailable": 0,
+      "max_absolute_error": 6.109476089477539e-07
+    },
+    {
+      "family": 6,
+      "title": "第 6 组：维护费与持有费",
+      "runs": 2430,
+      "conditions": 81,
+      "status": "pass",
+      "comparisons": 49815,
+      "failures": 0,
+      "unavailable": 0,
+      "max_absolute_error": 3.0174851417541504e-07
+    }
+  ],
+  "cross_family_checks": {
+    "first_five_rows": 2160,
+    "distinct_core_runs": 1530,
+    "duplicate_rows_not_independent": 630,
+    "all_overlapping_results_agree": true,
+    "baseline_reuses_risk_rows": 90,
+    "fee_rerun_rows": 2430,
+    "fee_physical_cases": 270,
+    "scenarios_per_condition": 30
+  },
+  "scope": "E0 overview and E1–E6, 500 cycles. The report's separate 1000-cycle horizon check and 200-cycle outage demonstration are outside this reproduction.",
+  "numerical_tolerance": {
+    "absolute": 1e-06,
+    "relative": 1e-09
+  }
+}

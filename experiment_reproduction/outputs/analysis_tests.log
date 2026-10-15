@@ -1,0 +1,13 @@
+test_all_seven_accept_real_plain_exports (test_analysis.AnalysisTests.test_all_seven_accept_real_plain_exports)
+移除附加观测列，七个脚本仍能独立分析；缺失记录为 partial，不伪造数据。 ... ok
+test_broken_cost_and_changed_controls_rejected (test_analysis.AnalysisTests.test_broken_cost_and_changed_controls_rejected) ... ok
+test_duplicate_step_rejected (test_analysis.AnalysisTests.test_duplicate_step_rejected) ... ok
+test_extra_cycle_rows_not_counted_as_replicates (test_analysis.AnalysisTests.test_extra_cycle_rows_not_counted_as_replicates) ... ok
+test_missing_or_duplicated_scenarios_rejected (test_analysis.AnalysisTests.test_missing_or_duplicated_scenarios_rejected) ... ok
+test_pairing_is_seed_based_not_row_order (test_analysis.AnalysisTests.test_pairing_is_seed_based_not_row_order) ... ok
+test_unfinished_run_rejected (test_analysis.AnalysisTests.test_unfinished_run_rejected) ... ok
+
+----------------------------------------------------------------------
+Ran 7 tests in 1.408s
+
+OK

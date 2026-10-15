@@ -1,0 +1,58 @@
+{
+  "status": "pass",
+  "before_model_sha256": "6d6a531e9ee276e96efbb78009a141973afc5b2ee3fdb344f8c640ad364e4340",
+  "after_model_sha256": "c6ff450eb8c5541ee71756435c85324a72a50951fdae5e34174e187909ccd452",
+  "removed_variables": [
+    "unplaced-order",
+    "buyer-total-cost",
+    "buyer-cumulative-cost"
+  ],
+  "declarations_before": {
+    "globals": 41,
+    "suppliers-own": 13,
+    "contracts-own": 8,
+    "manufacturers-own": 17
+  },
+  "declarations_after": {
+    "globals": 41,
+    "suppliers-own": 13,
+    "contracts-own": 8,
+    "manufacturers-own": 14
+  },
+  "code_lines_before": 675,
+  "code_lines_after": 667,
+  "unchanged": [
+    "interface widgets",
+    "six experiment definitions",
+    "network and economic formulas",
+    "historical reproduction files"
+  ],
+  "behaviorspace_regression": {
+    "status": "pass",
+    "seed": 2026,
+    "runs": 153,
+    "cycles_per_run": 500,
+    "compared_with": "original report per-run results and fee repricing",
+    "families": 6
+  },
+  "edge_cases": {
+    "status": "pass",
+    "cycles_per_case": 30,
+    "numeric_comparisons": 207066,
+    "cases": [
+      "baseline",
+      "zero capacity",
+      "zero demand",
+      "all suppliers fail every cycle",
+      "all suppliers fail for three cycles",
+      "controlled outage",
+      "one supplier and one manufacturer",
+      "maximum population 20 + 50"
+    ]
+  },
+  "documentation": {
+    "code_snapshots": "match current model",
+    "nonblank_source_line_coverage": "complete",
+    "navigation_links": "pass"
+  }
+}

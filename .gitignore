@@ -1,0 +1,11 @@
+# Coursework requirements and submission documents stay local.
+/COMP90083_Project_2.pdf
+/Proposal/
+/report/
+/MODEL_PLAN.md
+
+# Local editor settings and generated caches.
+/.vscode/
+.DS_Store
+__pycache__/
+*.py[cod]

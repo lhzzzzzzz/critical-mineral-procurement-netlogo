@@ -4,6 +4,10 @@ A NetLogo 7.0.4 model comparing one-, two-, and three-supplier procurement under
 
 **Experiment reports:** [English](experiment-results-en.html) · [中文](experiment-results.html)
 
+**Viva review (中文):** [建模与逐 cycle 演示](docs/cycle-walkthrough.zh.html) · [完整代码讲解](docs/code-walkthrough.zh.html) · [界面学习指南](docs/model-study-guide.zh.html). The first two standalone HTML guides include a seven-cycle worked example, all 47 procedures and 667 lines of model logic, source navigation, and rehearsal questions. Open them in a browser; no internet connection is required.
+
+**Experiment reproduction (中文):** [第 0–6 组实验的脚本与说明](experiment_reproduction/README.zh.md) · [复现结果总览](experiment_reproduction/outputs/index.html). Includes Python analysis, 4,590 actual BehaviorSpace runs, saved CSV outputs, and comparisons with the historical study.
+
 ## Run and read the interface
 
 Open `model.nlogox` and use the controls above the network:
@@ -42,18 +46,30 @@ World expansion increases actual model distances and can change freight costs. P
 
 ## Reproducible experiments
 
-Two experiments are saved inside the existing model. Open **Tools → BehaviorSpace**, select an experiment, and save its table output to a location of your choice.
+Six experiments are saved inside the model. Reopen the saved model if it is already open, then open **Tools → BehaviorSpace**, select an experiment, and save its table output to a location of your choice.
 
 | Experiment | Conditions | Runs |
 |---|---|---:|
 | `sourcing-risk-comparison` | 1/2/3 partners × failure risk 0/2/5%; freight 3 | 270 |
+| `capacity-sensitivity` | 1/2/3 partners × capacity 60/80/100 × failure risk 0/2% | 540 |
+| `inventory-target-sensitivity` | 1/2/3 partners × target 0/1/2 times demand × failure risk 0/2% | 540 |
 | `transport-sensitivity` | 1/2/3 partners × freight 2/3/4; failure risk 2% | 270 |
+| `price-feedback-sensitivity` | 1/2/3 partners × price response 0/0.20/0.40 × failure risk 0/2% | 540 |
+| `accounting-fee-sensitivity-rerun` | 1/2/3 partners × target 0/1/2 × relationship fee 0/50/100 × holding fee 0/1/2; failure risk 2% | 2,430 |
 
-Every condition uses 30 paired scenarios, each run for 500 cycles. Scenario seeds 2026–2055 pair with map seeds 1–30. Both experiments explicitly fix populations at 5 suppliers and 10 manufacturers, capacity 100, demand 30–50, random duration 1–10, and controlled outage off. Changing the interface population does not change these saved baseline experiments. The experimental initializer applies freight **before** initial supplier selection. The 90 baseline runs appear in both experiments; the two sets therefore contain 450 distinct parameter/seed combinations.
+Every condition uses 30 paired scenarios, each run for 500 cycles. Scenario seeds 2026–2055 pair with map seeds 1–30. All experiments explicitly fix populations at 5 suppliers and 10 manufacturers, demand 30–50, random duration 1–10, and controlled outage off. Unless varied in the table, capacity is 100, target is one cycle of demand, freight is 3, price response is 0.20, relationship fee is 50, and holding fee is 1. Initial stock remains a draw from 40–80 even when the target changes. Changing the interface population does not change these saved experiments.
+
+The experimental initializer applies freight **before** initial supplier selection. The four added experiment setups preserve target, price and fee parameters through initialization, which would otherwise reset them. `inventory-target-multiplier` is an experiment global, not an Interface input; New map / Replay restore its default of 1. The cycle rules are unchanged.
+
+The historical six-family study used a Java driver with the NetLogo headless engine; only the risk and freight definitions were originally saved in BehaviorSpace. The four added definitions make the same factor grids available in the GUI. The fee experiment **reruns** each combination, whereas the original report repriced 270 existing trajectories under nine fee combinations. It should reproduce their costs but is slower, and its fee variants are not additional independent samples. These definitions export final metrics; the report's extra congestion observations, longer-horizon checks and plots still use its downloadable runner and analysis scripts.
+
+Running all six definitions produces 4,590 rows. The first five grids contain 2,160 entries but only 1,530 distinct parameter/seed combinations. The original risk and freight grids share 90 baseline runs, leaving 450 distinct combinations between those two. Do not count overlapping baselines or fee variants as independent replicates. For a quick trial, use a single enumerated seed, e.g. `["scenario-seed" 2026]`, and a shorter time limit in a duplicate experiment; retain the full saved definitions for formal runs.
 
 Each scenario, rather than each cycle, is an experimental replicate. Compare strategies using paired differences across the same 30 scenarios. Outputs include service level, unmet units, spending and its components, production, receipts, and starting/terminal stock. Undefined denominator metrics return `false` in BehaviorSpace and show `N/A` on the interface.
 
 These are finite-horizon experiments, including initialization; no warm-up is discarded. They measure outcomes under the stated initial-stock policy, not an established stationary distribution.
+
+The six saved definitions were checked with actual BehaviorSpace runs at scenario seed 2026 across every factor combination: 153 runs × 500 cycles. Final service, quantities and costs matched the archived report, including the fee group's revaluations, within numerical tolerance. This validates the definitions on one paired scenario; it is not a new execution of all 4,590 saved runs or a replacement for the historical study.
 
 ## Six-family experimental report
 

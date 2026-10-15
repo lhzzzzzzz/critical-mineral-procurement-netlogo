@@ -1,0 +1,14 @@
+{
+  "source_html": "/Users/lhzzzzz/Desktop/COMP90083/ass2/experiment-results.html",
+  "html_sha256": "9180b4f6098126a77b484a79b2d9774c783527673c8511fba3e1deaf13d71f4f",
+  "embedded_zip_sha256": "27934da420db2382bf074e981a599e57ac70abd634dc72632edb55b02d808e81",
+  "purpose": "Historical reference only; never used to fill new simulation data.",
+  "files": {
+    "results-500.csv": "fb5b33853236f741e3c997e6055701138b382bbb116d16a41d1867fa38e6fee1",
+    "summary.json": "fb40f1463ce7f3ef6d5790f458562e19ba0d05b636e7b2482a52e46b5949986c",
+    "manifest.json": "1df4ab65cc5a08f05d38027bad321f1728b67138c6c414300bd459a76abbd0d3",
+    "model.nlogox": "88d53e31e1f7a5323a6819fcaba49ddf757f1e8a4aa8e02408736defbde17094",
+    "analyze.py": "2a3e5d64af65a360865cc3b3ad79335c6ec995b41a1b6a4770d505098370387e",
+    "README.txt": "98286cf47f256878fd271e864d1cd0f9ab5b596b573daef67795f5aa92bc102f"
+  }
+}
